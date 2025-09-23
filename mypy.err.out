@@ -1,0 +1,179 @@
+﻿app\strategies\xau_momentum.py:178: error: Name "_env_float" already defined on
+line 19  [no-redef]
+    def _env_float(name: str, default: float) -> float:
+    ^
+app\strategies\xau_momentum.py:185: error: Name "_env_int" already defined on
+line 26  [no-redef]
+    def _env_int(name: str, default: int) -> int:
+    ^
+app\strategies\xau_momentum.py:213: error: Name "_tf" already defined on line
+53  [no-redef]
+    def _tf(tf: str) -> int:
+    ^
+app\strategies\xau_momentum.py:217: error: Name "_rates" already defined on
+line 58  [no-redef]
+    def _rates(symbol: str, tf: str, n=300):
+    ^
+app\strategies\xau_momentum.py:226: error: Name "_ema" already defined on line
+67  [no-redef]
+    def _ema(s: pd.Series, n: int) -> pd.Series:
+    ^
+app\strategies\xau_momentum.py:230: error: Name "_rsi" already defined on line
+71  [no-redef]
+    def _rsi(s: pd.Series, p=14) -> pd.Series:
+    ^
+app\strategies\xau_momentum.py:240: error: Name "_atr" already defined on line
+81  [no-redef]
+    def _atr(df: pd.DataFrame, p=14) -> pd.Series:
+    ^
+app\strategies\xau_momentum.py:247: error: Name "signal" already defined on
+line 89  [no-redef]
+    def signal(symbol: str, timeframe: str = "M15") -> dict[str, Any] | No...
+    ^
+app\risk\risk.py:3: error: Module "app.risk" has no attribute "config" 
+[attr-defined]
+    from . import config
+    ^~~~~~~~~~~~~~~~~~~~
+app\exec\executor.bak.py:3: error: Module "app.exec" has no attribute "config" 
+[attr-defined]
+    from .. import config
+    ^~~~~~~~~~~~~~~~~~~~~
+app\exec\executor.bak.py:28: error: Item "None" of "str | Any | None" has no
+attribute "lower"  [union-attr]
+        mode = (mode or getattr(config, "EXECUTION_MODE", "paper")).lower(...
+               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+auto_runner.py:46: error: Incompatible types in assignment (expression has type
+"datetime", target has type "None")  [assignment]
+        state[symbol]["last_trade_ts"] = datetime.datetime.now()
+                                         ^~~~~~~~~~~~~~~~~~~~~~~
+app\risk\guards.py:16: error: All conditional function variants must have
+identical signatures  [misc]
+        def is_symbol_trading_now(symbol: str) -> dict[str, Any]:
+        ^
+app\risk\guards.py:16: note: Original:
+app\risk\guards.py:16: note:     def is_symbol_trading_now(symbol: str) -> Any
+app\risk\guards.py:16: note: Redefinition:
+app\risk\guards.py:16: note:     def is_symbol_trading_now(symbol: str) -> dict[str, Any]
+app\risk\guards.py:29: error: All conditional function variants must have
+identical signatures  [misc]
+        def get_account_info() -> dict[str, Any]:
+        ^
+app\risk\guards.py:29: note: Original:
+app\risk\guards.py:29: note:     def get_account_info() -> dict[Any, Any]
+app\risk\guards.py:29: note: Redefinition:
+app\risk\guards.py:29: note:     def get_account_info() -> dict[str, Any]
+app\risk\guards.py:182: error: Argument 1 to "_same_side" has incompatible type
+"Any | None"; expected "str"  [arg-type]
+                ps = _same_side(p.get("side") or p.get("type") or p.get("t...
+                                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~...
+app\util\ta.py:13: error: Name "pd" is not defined  [name-defined]
+        return np.array(pd.Series(series).ewm(span=period, adjust=False).m...
+                        ^~
+app\strategies\macd_crossover.py:37: error: Unexpected keyword argument "count"
+for "get_rates"  [call-arg]
+        df = get_rates(symbol, timeframe, count=max(300, SLOW + SIG + 20))
+             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\market\data.py: note: "get_rates" defined here
+app\strategies\bollinger_band_breakout.py:35: error: Unexpected keyword
+argument "count" for "get_rates"  [call-arg]
+        df = get_rates(symbol, timeframe, count=max(300, P + 50))
+             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\market\data.py: note: "get_rates" defined here
+app\strategies\stocks_momentum.py:5: error: Module "app.strategies" has no
+attribute "index_breakout"  [attr-defined]
+    from app.strategies import fx_momentum, index_breakout, stocks_momentu...
+    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~...
+app\strategies\stocks_momentum.py:13: error: Module has no attribute "signal" 
+[attr-defined]
+        (lambda s: s in ("MSFT", "AAPL", "NVDA"), stocks_momentum.signal),...
+                                                  ^~~~~~~~~~~~~~~~~~~~~~
+app\monitor\trailing.py:66: error: Unexpected keyword argument "count" for
+"get_rates"  [call-arg]
+        df = get_rates(symbol, tf, count=max(300, period + 50))
+             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\market\data.py: note: "get_rates" defined here
+app\monitor\trailing.py:171: error: Dict entry 1 has incompatible type "str":
+"int"; expected "str": "str"  [dict-item]
+                inspected.append({"symbol": symbol, "positions": 0})
+                                                    ^~~~~~~~~~~~~~
+app\monitor\trailing.py:204: error: Dict entry 1 has incompatible type "str":
+"int"; expected "str": "str"  [dict-item]
+                        {"symbol": symbol, "ticket": ticket, "skip": "not_...
+                                           ^~~~~~~~~~~~~~~~
+app\monitor\trailing.py:209: error: Dict entry 1 has incompatible type "str":
+"int"; expected "str": "str"  [dict-item]
+                        {"symbol": symbol, "ticket": ticket, "skip": f"pro...
+                                           ^~~~~~~~~~~~~~~~
+app\monitor\trailing.py:222: error: Dict entry 1 has incompatible type "str":
+"int"; expected "str": "str"  [dict-item]
+                            {"symbol": symbol, "ticket": ticket, "skip": "...
+                                               ^~~~~~~~~~~~~~~~
+app\monitor\trailing.py:234: error: Dict entry 1 has incompatible type "str":
+"int"; expected "str": "str"  [dict-item]
+                            {"symbol": symbol, "ticket": ticket, "skip": "...
+                                               ^~~~~~~~~~~~~~~~
+app\monitor\trailing.py:239: error: Dict entry 1 has incompatible type "str":
+"int"; expected "str": "str"  [dict-item]
+                            {"symbol": symbol, "ticket": ticket, "skip": f...
+                                               ^~~~~~~~~~~~~~~~
+app\monitor\trailing.py:263: error: Dict entry 1 has incompatible type "str":
+"int"; expected "str": "str"  [dict-item]
+                            {"symbol": symbol, "ticket": ticket, "skip": "...
+                                               ^~~~~~~~~~~~~~~~
+app\monitor\trailing.py:268: error: Dict entry 1 has incompatible type "str":
+"int"; expected "str": "str"  [dict-item]
+                            {"symbol": symbol, "ticket": ticket, "skip": f...
+                                               ^~~~~~~~~~~~~~~~
+app\monitor\loss_monitor.py:56: error: Name "_COOLDOWN" is not defined 
+[name-defined]
+            _COOLDOWN
+            ^~~~~~~~~
+app\monitor\loss_monitor.py:58: error: Name "_COOLDOWN" is not defined 
+[name-defined]
+            _COOLDOWN = {}
+            ^~~~~~~~~
+app\monitor\loss_monitor.py:66: error: Name "_COOLDOWN" is not defined 
+[name-defined]
+            last = _COOLDOWN.get(symbol, 0)
+                   ^~~~~~~~~
+app\monitor\loss_monitor.py:86: error: Dict entry 2 has incompatible type
+"str": "float"; expected "str": "str"  [dict-item]
+    ...            {"symbol": symbol, "ticket": ticket, "profit": profit, "si...
+                                                        ^~~~~~~~~~~~~~~~
+app\monitor\loss_monitor.py:118: error: Unexpected keyword argument "ticket"
+for "close_all"  [call-arg]
+                res = close_all(symbol=symbol, ticket=ticket, volume=vol)
+                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\monitor\loss_monitor.py:122: error: Name "_COOLDOWN" is not defined 
+[name-defined]
+                _COOLDOWN[symbol] = _now_min()
+                ^~~~~~~~~
+app\exec\executor.py: note: "close_all" defined here
+run_auto_guarded.py:132: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+run_auto_guarded.py:133: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+app\main_force.pay.py:12: error: Cannot find implementation or library stub for
+module named "app.main_force"  [import-not-found]
+    from . import config
+    ^
+app\main_force.pay.py:12: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
+app\main_force.pay.py:78: error: Incompatible types in assignment (expression
+has type "Any | None", variable has type "float")  [assignment]
+                size = sig.get("size")
+                       ^~~~~~~~~~~~~~~
+app\main_force.pay.py:79: error: Incompatible types in assignment (expression
+has type "Any | None", variable has type "float")  [assignment]
+                sl_pips = sig.get("sl_pips")
+                          ^~~~~~~~~~~~~~~~~~
+app\main_force.pay.py:80: error: Incompatible types in assignment (expression
+has type "Any | None", variable has type "float")  [assignment]
+                tp_pips = sig.get("tp_pips")
+                          ^~~~~~~~~~~~~~~~~~
+app\main.py:38: error: Unused "type: ignore" comment  [unused-ignore]
+        mt5 = None  # type: ignore
+        ^~~~~~~~~~~~~~~~~~~~~~~~~
+app\main.py:237: error: Argument 1 to "float" has incompatible type
+"float | None"; expected "str | Buffer | SupportsFloat | SupportsIndex" 
+[arg-type]
+            lot = compute_lot(order.symbol, float(order.sl_pips), mode="ri...
+                                                  ^~~~~~~~~~~~~
+Found 41 errors in 13 files (checked 43 source files)

@@ -1,0 +1,162 @@
+﻿app\risk\risk.py:3: error: Module "app.risk" has no attribute "config" 
+[attr-defined]
+    from . import config
+    ^~~~~~~~~~~~~~~~~~~~
+auto_runner.py:46: error: Incompatible types in assignment (expression has type
+"datetime", target has type "None")  [assignment]
+        state[symbol]["last_trade_ts"] = datetime.datetime.now()
+                                         ^~~~~~~~~~~~~~~~~~~~~~~
+app\risk\guards.py:13: error: Unused "type: ignore" comment  [unused-ignore]
+        from app.brokers.mt5_client import is_symbol_trading_now  # type: ...
+        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~...
+app\risk\guards.py:15: error: All conditional function variants must have
+identical signatures  [misc]
+        def is_symbol_trading_now(symbol: str) -> dict[str, Any]:
+        ^
+app\risk\guards.py:15: note: Original:
+app\risk\guards.py:15: note:     def is_symbol_trading_now(symbol: str) -> Any
+app\risk\guards.py:15: note: Redefinition:
+app\risk\guards.py:15: note:     def is_symbol_trading_now(symbol: str) -> dict[str, Any]
+app\risk\guards.py:24: error: Unused "type: ignore" comment  [unused-ignore]
+        from app.brokers.mt5_client import get_account_info  # type: ignor...
+        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\risk\guards.py:26: error: All conditional function variants must have
+identical signatures  [misc]
+        def get_account_info() -> dict[str, Any]:
+        ^
+app\risk\guards.py:26: note: Original:
+app\risk\guards.py:26: note:     def get_account_info() -> dict[Any, Any]
+app\risk\guards.py:26: note: Redefinition:
+app\risk\guards.py:26: note:     def get_account_info() -> dict[str, Any]
+app\monitor\trailing.py:161: error: Unexpected keyword argument "ticket" for
+"close_all"  [call-arg]
+                        result = close_all(ticket=ticket)
+                                 ^~~~~~~~~~~~~~~~~~~~~~~~
+app\exec\executor.py: note: "close_all" defined here
+app\monitor\trailing.py:190: error: Argument 1 to "int" has incompatible type
+"Any | None"; expected
+"str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc"  [arg-type]
+                    "offenders": [int(p.get("ticket")) for p in offending_...
+                                      ^~~~~~~~~~~~~~~
+app\monitor\loss_monitor.py:196: error: Argument 1 to "int" has incompatible
+type "Any | None"; expected
+"str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc"  [arg-type]
+                        int(p.get("ticket")) for p in offending_positions ...
+                            ^~~~~~~~~~~~~~~
+run_auto_guarded.py:132: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+run_auto_guarded.py:133: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+app\market\data.py:183: error: Unused "type: ignore" comment  [unused-ignore]
+        return get_rates(symbol, tf=tf, n=n, count=count, timeframe=timefr...
+        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~...
+app\strategies\macd_crossover.py:38: error: Item
+"tuple[bool | dict[str, Any], ...]" of "tuple[bool, dict[str, Any]] | Any" has
+no attribute "empty"  [union-attr]
+        if df is None or df.empty:
+                         ^~~~~~~~
+app\strategies\macd_crossover.py:41: error: Item "bool" of
+"bool | dict[str, Any] | Any" has no attribute "to_numpy"  [union-attr]
+        closes = df["close"].to_numpy(float)
+                 ^~~~~~~~~~~~~~~~~~~~
+app\strategies\macd_crossover.py:41: error: Item "dict[str, Any]" of
+"bool | dict[str, Any] | Any" has no attribute "to_numpy"  [union-attr]
+        closes = df["close"].to_numpy(float)
+                 ^~~~~~~~~~~~~~~~~~~~
+app\strategies\macd_crossover.py:41: error: No overload variant of
+"__getitem__" of "tuple" matches argument type "str"  [call-overload]
+        closes = df["close"].to_numpy(float)
+                    ^~~~~~~
+app\strategies\macd_crossover.py:41: note: Possible overload variants:
+app\strategies\macd_crossover.py:41: note:     def __getitem__(self, SupportsIndex, /) -> bool | dict[str, Any]
+app\strategies\macd_crossover.py:41: note:     def __getitem__(self, slice[Any, Any, Any], /) -> tuple[bool | dict[str, Any], ...]
+app\strategies\bollinger_band_breakout.py:36: error: Item
+"tuple[bool | dict[str, Any], ...]" of "tuple[bool, dict[str, Any]] | Any" has
+no attribute "empty"  [union-attr]
+        if df is None or df.empty:
+                         ^~~~~~~~
+app\strategies\bollinger_band_breakout.py:39: error: Item "bool" of
+"bool | dict[str, Any] | Any" has no attribute "to_numpy"  [union-attr]
+        closes = df["close"].to_numpy(float)
+                 ^~~~~~~~~~~~~~~~~~~~
+app\strategies\bollinger_band_breakout.py:39: error: Item "dict[str, Any]" of
+"bool | dict[str, Any] | Any" has no attribute "to_numpy"  [union-attr]
+        closes = df["close"].to_numpy(float)
+                 ^~~~~~~~~~~~~~~~~~~~
+app\strategies\bollinger_band_breakout.py:39: error: No overload variant of
+"__getitem__" of "tuple" matches argument type "str"  [call-overload]
+        closes = df["close"].to_numpy(float)
+                    ^~~~~~~
+app\strategies\bollinger_band_breakout.py:39: note: Possible overload variants:
+app\strategies\bollinger_band_breakout.py:39: note:     def __getitem__(self, SupportsIndex, /) -> bool | dict[str, Any]
+app\strategies\bollinger_band_breakout.py:39: note:     def __getitem__(self, slice[Any, Any, Any], /) -> tuple[bool | dict[str, Any], ...]
+app\strategies\bollinger_band_breakout.py:40: error: Item "bool" of
+"bool | dict[str, Any] | Any" has no attribute "to_numpy"  [union-attr]
+        highs = df["high"].to_numpy(float)
+                ^~~~~~~~~~~~~~~~~~~
+app\strategies\bollinger_band_breakout.py:40: error: Item "dict[str, Any]" of
+"bool | dict[str, Any] | Any" has no attribute "to_numpy"  [union-attr]
+        highs = df["high"].to_numpy(float)
+                ^~~~~~~~~~~~~~~~~~~
+app\strategies\bollinger_band_breakout.py:40: error: No overload variant of
+"__getitem__" of "tuple" matches argument type "str"  [call-overload]
+        highs = df["high"].to_numpy(float)
+                   ^~~~~~
+app\strategies\bollinger_band_breakout.py:40: note: Possible overload variants:
+app\strategies\bollinger_band_breakout.py:40: note:     def __getitem__(self, SupportsIndex, /) -> bool | dict[str, Any]
+app\strategies\bollinger_band_breakout.py:40: note:     def __getitem__(self, slice[Any, Any, Any], /) -> tuple[bool | dict[str, Any], ...]
+app\strategies\bollinger_band_breakout.py:41: error: Item "bool" of
+"bool | dict[str, Any] | Any" has no attribute "to_numpy"  [union-attr]
+        lows = df["low"].to_numpy(float)
+               ^~~~~~~~~~~~~~~~~~
+app\strategies\bollinger_band_breakout.py:41: error: Item "dict[str, Any]" of
+"bool | dict[str, Any] | Any" has no attribute "to_numpy"  [union-attr]
+        lows = df["low"].to_numpy(float)
+               ^~~~~~~~~~~~~~~~~~
+app\strategies\bollinger_band_breakout.py:41: error: No overload variant of
+"__getitem__" of "tuple" matches argument type "str"  [call-overload]
+        lows = df["low"].to_numpy(float)
+                  ^~~~~
+app\strategies\bollinger_band_breakout.py:41: note: Possible overload variants:
+app\strategies\bollinger_band_breakout.py:41: note:     def __getitem__(self, SupportsIndex, /) -> bool | dict[str, Any]
+app\strategies\bollinger_band_breakout.py:41: note:     def __getitem__(self, slice[Any, Any, Any], /) -> tuple[bool | dict[str, Any], ...]
+app\strategies\stocks_momentum.py:5: error: Module "app.strategies" has no
+attribute "index_breakout"  [attr-defined]
+    from app.strategies import fx_momentum, index_breakout, stocks_momentu...
+    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~...
+app\strategies\stocks_momentum.py:13: error: Module has no attribute "signal" 
+[attr-defined]
+        (lambda s: s in ("MSFT", "AAPL", "NVDA"), stocks_momentum.signal),...
+                                                  ^~~~~~~~~~~~~~~~~~~~~~
+app\main_force.pay.py:12: error: Cannot find implementation or library stub for
+module named "app.main_force"  [import-not-found]
+    from . import config
+    ^
+app\main_force.pay.py:12: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
+app\main_force.pay.py:78: error: Incompatible types in assignment (expression
+has type "Any | None", variable has type "float")  [assignment]
+                size = sig.get("size")
+                       ^~~~~~~~~~~~~~~
+app\main_force.pay.py:79: error: Incompatible types in assignment (expression
+has type "Any | None", variable has type "float")  [assignment]
+                sl_pips = sig.get("sl_pips")
+                          ^~~~~~~~~~~~~~~~~~
+app\main_force.pay.py:80: error: Incompatible types in assignment (expression
+has type "Any | None", variable has type "float")  [assignment]
+                tp_pips = sig.get("tp_pips")
+                          ^~~~~~~~~~~~~~~~~~
+app\main.py:23: error: Module "app.monitor.trailing" has no attribute
+"trail_positions"; maybe "get_positions"?  [attr-defined]
+    from app.monitor.trailing import trail_positions
+    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+app\main.py:38: error: Unused "type: ignore" comment  [unused-ignore]
+        mt5 = None  # type: ignore
+        ^~~~~~~~~~~~~~~~~~~~~~~~~
+app\main.py:237: error: Argument 1 to "float" has incompatible type
+"float | None"; expected "str | Buffer | SupportsFloat | SupportsIndex" 
+[arg-type]
+            lot = compute_lot(order.symbol, float(order.sl_pips), mode="ri...
+                                                  ^~~~~~~~~~~~~
+app\main.py:412: error: Item "tuple[bool | dict[str, Any], ...]" of
+"tuple[bool, dict[str, Any]] | Any" has no attribute "tail"  [union-attr]
+            "candles": df.tail(5).to_dict(orient="records"),  # show last ...
+                       ^~~~~~~
+Found 34 errors in 11 files (checked 41 source files)

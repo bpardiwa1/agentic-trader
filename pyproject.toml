@@ -1,0 +1,131 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-trader"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+# ---------------------------
+# Black
+# ---------------------------
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+# Use extend-exclude so we keep Black's defaults; pattern is a single valid regex string.
+extend-exclude = '''(?i)(
+  ^\.venv/|
+  ^venv/|
+  ^build/|
+  ^dist/|
+  ^\.git/|
+  ^\.mypy_cache/|
+  ^\.ruff_cache/|
+  ^__pycache__/|
+  .*\.(bak|bkp)\.py$
+)'''
+
+# ---------------------------
+# Ruff
+# ---------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["app", "tools"]
+# Globs, not regex:
+exclude = [
+  ".git",
+  ".mypy_cache",
+  ".ruff_cache",
+  "__pycache__",
+  "build",
+  "dist",
+  ".venv",
+  "venv",
+  # common backups
+  "app/**/.*.py",               # hidden files, if any
+  "app/**/*.bak.py",
+  "app/**/*.bkp.py",
+  "app/**/momentum.backup*.py",
+  "app/**/xau_momentum,bkp.py", # stray comma filename
+]
+
+[tool.ruff.lint]
+# Core error/warning families + common quality rules (keeps docstring checks off by default).
+select = [
+  "E",  # pycodestyle (incl. E741 ambiguous names)
+  "W",  # pycodestyle warnings
+  "F",  # pyflakes
+  "I",  # isort
+  "B",  # flake8-bugbear
+  "UP", # pyupgrade
+  "SIM",# flake8-simplify
+  "RET",# flake8-return
+  "PL", # Pylint-inspired rules
+  "RUF" # Ruff-specific
+]
+ignore = [
+  # dial these down as you like:
+  "E203",     # Black-compatible slicing
+  "E266",     # too many leading '#' for block comment
+  "PLR0913",  # too many arguments (common in FastAPI endpoints)
+]
+
+# You can relax or tighten on backup files if you keep them in tree:
+[tool.ruff.lint.per-file-ignores]
+"app/**/momentum.backup*.py" = ["F401", "F811", "F403", "E402", "E501"]
+"app/**/fx_momentum.bkp.py"  = ["F401", "F811", "F403", "E402", "E501"]
+"app/**/xau_momentum,bkp.py" = ["F401", "F811", "F403", "E402", "E501"]
+"app/**/main.bkp.py"         = ["F401", "F811", "F403", "E402", "E501"]
+
+# ---------------------------
+# Mypy
+# ---------------------------
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = false
+disallow_untyped_defs = false
+check_untyped_defs = false
+ignore_missing_imports = false
+follow_imports = "normal"
+pretty = true
+show_error_codes = true
+# Keep mypy away from backup files & virtualenvs. Pattern is a single regex string.
+exclude = '''(?i)(
+  ^\.venv/|
+  ^venv/|
+  ^build/|
+  ^dist/|
+  ^\.git/|
+  ^\.mypy_cache/|
+  ^\.ruff_cache/|
+  ^__pycache__/|
+  .*\.(bak|bkp)\.py$
+)'''
+
+# Ignore missing stubs for optional third-party deps we know about.
+[[tool.mypy.overrides]]
+module = [
+  "dotenv",
+  "uvicorn",
+  "numpy",
+  "pandas",
+  "MetaTrader5",
+  "matplotlib",
+  "matplotlib.pyplot",
+  "requests",
+]
+ignore_missing_imports = true
+
+# Ignore missing stubs for optional internal submodules that may not exist on every machine.
+[[tool.mypy.overrides]]
+module = [
+  "app.risk.schemas",
+  "app.risk.util.pricing",
+  "app.exec.executor.executor_mt5",
+]
+ignore_missing_imports = true

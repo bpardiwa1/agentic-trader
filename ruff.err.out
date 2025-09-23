@@ -1,0 +1,990 @@
+﻿F401 `.auto_decider.decide_signal` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> app\agents\__init__.py:1:27
+  |
+1 | from .auto_decider import decide_signal
+  |                           ^^^^^^^^^^^^^
+  |
+help: Use an explicit re-export: `decide_signal as decide_signal`
+
+PLC0415 `import` should be at the top-level of a file
+  --> app\agents\auto_decider.py:17:5
+   |
+16 | def _normalize_symbol_key(symbol: str) -> str:
+17 |     import re
+   |     ^^^^^^^^^
+18 |
+19 |     return "LOTS_" + re.sub(r"[^A-Z0-9]+", "_", (symbol or "").upper())
+   |
+
+PLR2004 Magic value used in comparison, consider replacing `50` with a constant variable
+  --> app\agents\auto_decider.py:69:38
+   |
+67 |     rates = payload.get("rates") if isinstance(payload, dict) else None
+68 |     # >>> FIX: never use if not rates when rates could be a numpy array
+69 |     if rates is None or len(rates) < 50:
+   |                                      ^^
+70 |         return {
+71 |             "side": "",
+   |
+
+PLR2004 Magic value used in comparison, consider replacing `70` with a constant variable
+ --> app\agents\meanrev.py:5:14
+  |
+3 |     atr = ctx.get("atr", 0.001)
+4 |     price = float(ctx.get("price", 0.0) or price)
+5 |     if rsi > 70:
+  |              ^^
+6 |         side = "SHORT"
+7 |     elif rsi < 30:
+  |
+
+PLR2004 Magic value used in comparison, consider replacing `30` with a constant variable
+ --> app\agents\meanrev.py:7:16
+  |
+5 |     if rsi > 70:
+6 |         side = "SHORT"
+7 |     elif rsi < 30:
+  |                ^^
+8 |         side = "LONG"
+9 |     else:
+  |
+
+RET504 Unnecessary assignment to `rsi` before `return` statement
+  --> app\agents\momentum.py:35:12
+   |
+33 |     rs = np.divide(ru, rd, out=np.zeros_like(ru), where=rd != 0)
+34 |     rsi = 100.0 - (100.0 / (1.0 + rs))
+35 |     return rsi
+   |            ^^^
+   |
+help: Remove unnecessary assignment
+
+RUF003 Comment contains ambiguous `ΓÇÖ` (RIGHT SINGLE QUOTATION MARK). Did you mean ``` (GRAVE ACCENT)?
+  --> app\agents\momentum.py:47:13
+   |
+45 |     tr3 = np.abs(low - prev_close)
+46 |     tr = np.maximum(tr1, np.maximum(tr2, tr3))
+47 |     # WilderΓÇÖs smoothing via EMA
+   |             ^
+48 |     return _ema(tr, n)
+   |
+
+PLR0915 Too many statements (58 > 50)
+  --> app\agents\momentum.py:56:5
+   |
+56 | def momentum_signal(
+   |     ^^^^^^^^^^^^^^^
+57 |     symbol: str, timeframe: str, rates: list[dict[str, float]]
+58 | ) -> dict[str, Any]:
+   |
+
+PLR2004 Magic value used in comparison, consider replacing `50` with a constant variable
+  --> app\agents\momentum.py:73:38
+   |
+71 |       }
+72 |     """
+73 |     if rates is None or len(rates) < 50:
+   |                                      ^^
+74 |         return {
+75 |             "side": "",
+   |
+
+SIM105 Use `contextlib.suppress(Exception)` instead of `try`-`except`-`pass`
+  --> app\brokers\mt5_client.py:88:9
+   |
+86 |       srv = getattr(config, "MT5_SERVER", None)
+87 |       if login and pwd and srv:
+88 | /         try:
+89 | |             mt5.login(int(login), password=pwd, server=srv)
+90 | |         except Exception:
+91 | |             pass
+   | |________________^
+92 |       return True, None
+   |
+help: Replace with `contextlib.suppress(Exception)`
+
+E402 Module level import not at top of file
+   --> app\brokers\mt5_client.py:139:1
+    |
+138 | # app/brokers/mt5_client.py
+139 | import time
+    | ^^^^^^^^^^^
+140 |
+141 | import MetaTrader5 as mt5
+    |
+
+E402 Module level import not at top of file
+   --> app\brokers\mt5_client.py:141:1
+    |
+139 | import time
+140 |
+141 | import MetaTrader5 as mt5
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+
+PLR2004 Magic value used in comparison, consider replacing `180` with a constant variable
+   --> app\brokers\mt5_client.py:177:81
+    |
+175 |     tick = mt5.symbol_info_tick(symbol)
+176 |     now = time.time()
+177 |     fresh_tick = bool(tick and getattr(tick, "time", 0) and (now - tick.time) < 180)
+    |                                                                                 ^^^
+178 |
+179 |     # optional lightweight probe: order_check with zero volume
+    |
+
+E501 Line too long (105 > 100)
+   --> app\brokers\mt5_client.py:190:101
+    |
+188 |         }
+189 |         chk = mt5.order_check(req)
+190 |         # If broker strictly rejects zero-volume, ignore; but if it says "market closed", treat as closed
+    |                                                                                                     ^^^^^
+191 |         comment = (getattr(chk, "comment", "") or "").lower()
+192 |         if "market closed" in comment or "trading prohibited" in comment:
+    |
+
+PLR0912 Too many branches (20 > 12)
+   --> app\exec\executor.py:99:5
+    |
+ 99 | def execute_market_order(
+    |     ^^^^^^^^^^^^^^^^^^^^
+100 |     symbol: str,
+101 |     side: str,
+    |
+
+PLR0915 Too many statements (52 > 50)
+   --> app\exec\executor.py:99:5
+    |
+ 99 | def execute_market_order(
+    |     ^^^^^^^^^^^^^^^^^^^^
+100 |     symbol: str,
+101 |     side: str,
+    |
+
+F841 Local variable `trade` is assigned to but never used
+   --> app\exec\executor.py:166:13
+    |
+164 |         for _ in range(MT5_ATTACH_RETRIES):
+165 |             time.sleep(MT5_ATTACH_DELAY_SEC)
+166 |             trade = mt5.history_deals_get(position=result.order, position2=result.order)
+    |             ^^^^^
+167 |             # Not all builds fill this the same way; attempt a modify by position if possible
+168 |             # Safer: find the position by symbol
+    |
+help: Remove assignment to unused variable `trade`
+
+SIM102 Use a single `if` statement instead of nested `if` statements
+   --> app\exec\executor_mt5.py:109:5
+    |
+107 |       password = str(getattr(config, "MT5_PASSWORD", "") or "")
+108 |       server = str(getattr(config, "MT5_SERVER", "") or "")
+109 | /     if login and password and server:
+110 | |         if not mt5.login(login=login, password=password, server=server):
+    | |________________________________________________________________________^
+111 |               return False, f"login failed: {mt5.last_error()}"
+112 |       return True, ""
+    |
+help: Combine `if` statements using `and`
+
+PLR0911 Too many return statements (7 > 6)
+   --> app\exec\executor_mt5.py:246:5
+    |
+246 | def execute_order_mt5(order) -> dict[str, Any]:
+    |     ^^^^^^^^^^^^^^^^^
+247 |     ok, err = _init_login()
+248 |     if not ok:
+    |
+
+PLR0912 Too many branches (18 > 12)
+   --> app\exec\executor_mt5.py:246:5
+    |
+246 | def execute_order_mt5(order) -> dict[str, Any]:
+    |     ^^^^^^^^^^^^^^^^^
+247 |     ok, err = _init_login()
+248 |     if not ok:
+    |
+
+PLR0915 Too many statements (51 > 50)
+   --> app\exec\executor_mt5.py:246:5
+    |
+246 | def execute_order_mt5(order) -> dict[str, Any]:
+    |     ^^^^^^^^^^^^^^^^^
+247 |     ok, err = _init_login()
+248 |     if not ok:
+    |
+
+SIM102 Use a single `if` statement instead of nested `if` statements
+  --> app\exec\executor_mt5_bkp2.py:19:5
+   |
+17 |           print(f"[MT5] symbol not found: {symbol}")
+18 |           return False
+19 | /     if not info.visible:
+20 | |         if not mt5.symbol_select(symbol, True):
+   | |_______________________________________________^
+21 |               print(f"[MT5] failed to select symbol: {symbol}")
+22 |               return False
+   |
+help: Combine `if` statements using `and`
+
+PLR0911 Too many return statements (7 > 6)
+  --> app\exec\executor_mt5_bkp2.py:44:5
+   |
+44 | def execute_order_mt5(order) -> dict:
+   |     ^^^^^^^^^^^^^^^^^
+45 |     if mt5 is None:
+46 |         return {
+   |
+
+PLR0912 Too many branches (13 > 12)
+   --> app\exec\executor_mt5_bkp2.py:130:5
+    |
+129 | # -------- CLOSE: by symbol/ticket --------
+130 | def close_positions_by_symbol_mt5(symbol: str, volume: float | None = None) -> dict:
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+131 |     """
+132 |     Close all (or part) of open positions for a symbol.
+    |
+
+E402 Module level import not at top of file
+   --> app\main.py:483:1
+    |
+481 | # ----------------------------- Momentum Inspector -----------------------------
+482 |
+483 | import numpy as np
+    | ^^^^^^^^^^^^^^^^^^
+    |
+
+PLR2004 Magic value used in comparison, consider replacing `50` with a constant variable
+   --> app\main.py:553:38
+    |
+552 |     rates = payload["rates"]
+553 |     if rates is None or len(rates) < 50:
+    |                                      ^^
+554 |         return {"ok": False, "note": "not enough data", "len": 0}
+    |
+
+RET504 Unnecessary assignment to `r` before `return` statement
+   --> app\main.py:575:16
+    |
+573 |         r = 100 - (100 / (1 + rs))
+574 |         r = np.concatenate([[50.0], r])
+575 |         return r
+    |                ^
+576 |
+577 |     ema_fast = ema(closes, int(os.getenv("MOMENTUM_FX_EMA_FAST", "50")))
+    |
+help: Remove unnecessary assignment
+
+RET504 Unnecessary assignment to `res` before `return` statement
+   --> app\main_force.pay.py:186:12
+    |
+184 |         comment=order.comment or "manual",
+185 |     )
+186 |     return res
+    |            ^^^
+    |
+help: Remove unnecessary assignment
+
+RUF003 Comment contains ambiguous `╧â` (GREEK SMALL LETTER SIGMA). Did you mean `o` (LATIN SMALL LETTER O)?
+   --> app\market\data.py:142:33
+    |
+140 |     alast = float(atr14[-1])
+141 |
+142 |     # Bollinger width (%) (20, 2╧â)
+    |                                 ^
+143 |     if len(closes) >= 20:
+144 |         m20 = pd.Series(closes).rolling(20).mean().to_numpy()
+    |
+
+PLR2004 Magic value used in comparison, consider replacing `20` with a constant variable
+   --> app\market\data.py:143:23
+    |
+142 |     # Bollinger width (%) (20, 2╧â)
+143 |     if len(closes) >= 20:
+    |                       ^^
+144 |         m20 = pd.Series(closes).rolling(20).mean().to_numpy()
+145 |         s20 = pd.Series(closes).rolling(20).std(ddof=0).to_numpy()
+    |
+
+PLR2004 Magic value used in comparison, consider replacing `55` with a constant variable
+   --> app\market\data.py:155:31
+    |
+154 |     # Simple regime tag
+155 |     if e50 > e200 and rlast > 55:
+    |                               ^^
+156 |         regime, notes = "TRENDING_UP", "EMA50>EMA200 and RSI>55"
+157 |     elif e50 < e200 and rlast < 45:
+    |
+
+PLR2004 Magic value used in comparison, consider replacing `45` with a constant variable
+   --> app\market\data.py:157:33
+    |
+155 |     if e50 > e200 and rlast > 55:
+156 |         regime, notes = "TRENDING_UP", "EMA50>EMA200 and RSI>55"
+157 |     elif e50 < e200 and rlast < 45:
+    |                                 ^^
+158 |         regime, notes = "TRENDING_DOWN", "EMA50<EMA200 and RSI<45"
+159 |     else:
+    |
+
+E722 Do not use bare `except`
+  --> app\monitor\loss_monitor.py:16:5
+   |
+14 |     try:
+15 |         return int(float((os.getenv(name) or str(dflt)).split("#", 1)[0].strip()))
+16 |     except:
+   |     ^^^^^^
+17 |         return dflt
+   |
+
+PLW0603 Using the global statement to update `_COOLDOWN` is discouraged
+  --> app\monitor\loss_monitor.py:54:12
+   |
+52 |     # simple in-memory cooldown (per process)
+53 |     # key: symbol, value: minute timestamp of last close
+54 |     global _COOLDOWN
+   |            ^^^^^^^^^
+55 |     try:
+56 |         _COOLDOWN
+   |
+
+B018 Found useless expression. Either assign it to a variable or remove it.
+  --> app\monitor\loss_monitor.py:56:9
+   |
+54 |     global _COOLDOWN
+55 |     try:
+56 |         _COOLDOWN
+   |         ^^^^^^^^^
+57 |     except NameError:
+58 |         _COOLDOWN = {}
+   |
+
+PLC0415 `import` should be at the top-level of a file
+  --> app\monitor\loss_monitor.py:75:21
+   |
+73 |             if isinstance(p, str):
+74 |                 try:
+75 |                     import json
+   |                     ^^^^^^^^^^^
+76 |
+77 |                     p = json.loads(p)
+   |
+
+PLW2901 `for` loop variable `p` overwritten by assignment target
+  --> app\monitor\loss_monitor.py:77:21
+   |
+75 |                     import json
+76 |
+77 |                     p = json.loads(p)
+   |                     ^
+78 |                 except Exception:
+79 |                     continue
+   |
+
+PLR2004 Magic value used in comparison, consider replacing `5` with a constant variable
+  --> app\monitor\trailing.py:60:18
+   |
+58 |         return 0.1
+59 |     digits = _digits(symbol)
+60 |     if digits >= 5:
+   |                  ^
+61 |         return 0.0001
+62 |     return _point(symbol) * 10.0
+   |
+
+PLR0912 Too many branches (21 > 12)
+   --> app\monitor\trailing.py:142:5
+    |
+142 | def trail_positions(symbols: list[str]) -> dict[str, Any]:
+    |     ^^^^^^^^^^^^^^^
+143 |     if not _bool("TRAIL_ENABLE", True):
+144 |         return {"ok": True, "note": "disabled", "actions": []}
+    |
+
+PLR0915 Too many statements (87 > 50)
+   --> app\monitor\trailing.py:142:5
+    |
+142 | def trail_positions(symbols: list[str]) -> dict[str, Any]:
+    |     ^^^^^^^^^^^^^^^
+143 |     if not _bool("TRAIL_ENABLE", True):
+144 |         return {"ok": True, "note": "disabled", "actions": []}
+    |
+
+PLR0911 Too many return statements (10 > 6)
+   --> app\risk\guards.py:111:5
+    |
+111 | def risk_guard(symbol: str, side: str, sl_pips: float | None) -> dict[str, Any]:
+    |     ^^^^^^^^^^
+112 |     """
+113 |     Central pre-trade guard. Returns {"accepted": bool, "note": "..."}.
+    |
+
+PLR0912 Too many branches (17 > 12)
+   --> app\risk\guards.py:111:5
+    |
+111 | def risk_guard(symbol: str, side: str, sl_pips: float | None) -> dict[str, Any]:
+    |     ^^^^^^^^^^
+112 |     """
+113 |     Central pre-trade guard. Returns {"accepted": bool, "note": "..."}.
+    |
+
+PLR0915 Too many statements (53 > 50)
+   --> app\risk\guards.py:111:5
+    |
+111 | def risk_guard(symbol: str, side: str, sl_pips: float | None) -> dict[str, Any]:
+    |     ^^^^^^^^^^
+112 |     """
+113 |     Central pre-trade guard. Returns {"accepted": bool, "note": "..."}.
+    |
+
+E501 Line too long (103 > 100)
+   --> app\risk\guards.py:219:101
+    |
+217 |             }
+218 |
+219 |     # Daily loss limit (requires day PnL if you store it; here we look at balance/equity as weak proxy)
+    |                                                                                                     ^^^
+220 |     # If you track day PnL elsewhere, plug it here.
+221 |     daily_lim = _f("DAILY_LOSS_LIMIT", 0.0)
+    |
+
+F401 `.meanrev.meanrev_signal` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> app\strategies\__init__.py:3:22
+  |
+1 | # app/strategies/__init__.py
+2 | # app/strategies/__init__.py
+3 | from .meanrev import meanrev_signal  # uncomment if you add it
+  |                      ^^^^^^^^^^^^^^
+4 | from .momentum import momentum_signal
+  |
+help: Use an explicit re-export: `meanrev_signal as meanrev_signal`
+
+F401 `.momentum.momentum_signal` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> app\strategies\__init__.py:4:23
+  |
+2 | # app/strategies/__init__.py
+3 | from .meanrev import meanrev_signal  # uncomment if you add it
+4 | from .momentum import momentum_signal
+  |                       ^^^^^^^^^^^^^^^
+  |
+help: Use an explicit re-export: `momentum_signal as momentum_signal`
+
+E722 Do not use bare `except`
+  --> app\strategies\bollinger_band_breakout.py:13:5
+   |
+11 |     try:
+12 |         return float(os.getenv(name, str(dflt)).split("#", 1)[0].strip())
+13 |     except:
+   |     ^^^^^^
+14 |         return dflt
+   |
+
+E722 Do not use bare `except`
+  --> app\strategies\bollinger_band_breakout.py:20:5
+   |
+18 |     try:
+19 |         return int(float(os.getenv(name, str(dflt)).split("#", 1)[0].strip()))
+20 |     except:
+   |     ^^^^^^
+21 |         return dflt
+   |
+
+E741 Ambiguous variable name: `l`
+  --> app\strategies\bollinger_band_breakout.py:54:5
+   |
+52 |     price = float(closes[-1])
+53 |     u = float(upper[-1]) if not np.isnan(upper[-1]) else None
+54 |     l = float(lower[-1]) if not np.isnan(lower[-1]) else None
+   |     ^
+55 |
+56 |     debug = {
+   |
+
+E501 Line too long (107 > 100)
+  --> app\strategies\bollinger_band_breakout.py:88:101
+   |
+87 |     if long_ok and not why:
+88 |         sl_pips = None  # we set SL/TP in price terms; executor expects pips so we keep strategy SL/TP null
+   |                                                                                                     ^^^^^^^
+89 |         tp_pips = None
+90 |         # We still pass note; executor or sizing can use ATR
+   |
+
+E722 Do not use bare `except`
+  --> app\strategies\fx_momentum.py:15:5
+   |
+13 |     try:
+14 |         return float(os.environ.get(name, str(default)).split("#", 1)[0].strip())
+15 |     except:
+   |     ^^^^^^
+16 |         return default
+   |
+
+E722 Do not use bare `except`
+  --> app\strategies\fx_momentum.py:22:5
+   |
+20 |     try:
+21 |         return int(os.environ.get(name, str(default)).split("#", 1)[0].strip())
+22 |     except:
+   |     ^^^^^^
+23 |         return default
+   |
+
+E741 Ambiguous variable name: `l`
+  --> app\strategies\fx_momentum.py:67:5
+   |
+65 |     d = s.diff()
+66 |     g = d.clip(lower=0)
+67 |     l = -d.clip(upper=0)
+   |     ^
+68 |     ag = g.ewm(alpha=1 / p, min_periods=p, adjust=False).mean()
+69 |     al = l.ewm(alpha=1 / p, min_periods=p, adjust=False).mean()
+   |
+
+E741 Ambiguous variable name: `l`
+  --> app\strategies\fx_momentum.py:75:8
+   |
+74 | def _atr(df: pd.DataFrame, p=14) -> pd.Series:
+75 |     h, l, c = df["high"], df["low"], df["close"]
+   |        ^
+76 |     pc = c.shift(1)
+77 |     tr = pd.concat([(h - l), (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+   |
+
+E722 Do not use bare `except`
+  --> app\strategies\macd_crossover.py:11:5
+   |
+ 9 |     try:
+10 |         return float(os.getenv(name, str(dflt)).split("#", 1)[0].strip())
+11 |     except:
+   |     ^^^^^^
+12 |         return dflt
+   |
+
+E722 Do not use bare `except`
+  --> app\strategies\macd_crossover.py:18:5
+   |
+16 |     try:
+17 |         return int(float(os.getenv(name, str(dflt)).split("#", 1)[0].strip()))
+18 |     except:
+   |     ^^^^^^
+19 |         return dflt
+   |
+
+RET504 Unnecessary assignment to `rsi` before `return` statement
+  --> app\strategies\momentum.py:35:12
+   |
+33 |     rs = np.divide(ru, rd, out=np.zeros_like(ru), where=rd != 0)
+34 |     rsi = 100.0 - (100.0 / (1.0 + rs))
+35 |     return rsi
+   |            ^^^
+   |
+help: Remove unnecessary assignment
+
+RUF003 Comment contains ambiguous `ΓÇÖ` (RIGHT SINGLE QUOTATION MARK). Did you mean ``` (GRAVE ACCENT)?
+  --> app\strategies\momentum.py:47:13
+   |
+45 |     tr3 = np.abs(low - prev_close)
+46 |     tr = np.maximum(tr1, np.maximum(tr2, tr3))
+47 |     # WilderΓÇÖs smoothing via EMA
+   |             ^
+48 |     return _ema(tr, n)
+   |
+
+PLR0915 Too many statements (58 > 50)
+  --> app\strategies\momentum.py:56:5
+   |
+56 | def momentum_signal(
+   |     ^^^^^^^^^^^^^^^
+57 |     symbol: str, timeframe: str, rates: list[dict[str, float]]
+58 | ) -> dict[str, Any]:
+   |
+
+PLR2004 Magic value used in comparison, consider replacing `50` with a constant variable
+  --> app\strategies\momentum.py:73:38
+   |
+71 |       }
+72 |     """
+73 |     if rates is None or len(rates) < 50:
+   |                                      ^^
+74 |         return {
+75 |             "side": "",
+   |
+
+PLW0406 Module `app.strategies.stocks_momentum` imports itself
+ --> app\strategies\stocks_momentum.py:5:57
+  |
+3 | from typing import Any
+4 |
+5 | from app.strategies import fx_momentum, index_breakout, stocks_momentum, xau_momentum
+  |                                                         ^^^^^^^^^^^^^^^
+6 |
+7 | # registry: first match that returns True wins
+  |
+
+E722 Do not use bare `except`
+  --> app\strategies\xau_momentum.py:22:5
+   |
+20 |     try:
+21 |         return float(os.environ.get(name, str(default)).split("#", 1)[0].strip())
+22 |     except:
+   |     ^^^^^^
+23 |         return default
+   |
+
+E722 Do not use bare `except`
+  --> app\strategies\xau_momentum.py:29:5
+   |
+27 |     try:
+28 |         return int(os.environ.get(name, str(default)).split("#", 1)[0].strip())
+29 |     except:
+   |     ^^^^^^
+30 |         return default
+   |
+
+E741 Ambiguous variable name: `l`
+  --> app\strategies\xau_momentum.py:74:5
+   |
+72 |     d = s.diff()
+73 |     g = d.clip(lower=0)
+74 |     l = -d.clip(upper=0)
+   |     ^
+75 |     ag = g.ewm(alpha=1 / p, min_periods=p, adjust=False).mean()
+76 |     al = l.ewm(alpha=1 / p, min_periods=p, adjust=False).mean()
+   |
+
+E741 Ambiguous variable name: `l`
+  --> app\strategies\xau_momentum.py:82:8
+   |
+81 | def _atr(df: pd.DataFrame, p=14) -> pd.Series:
+82 |     h, l, c = df["high"], df["low"], df["close"]
+   |        ^
+83 |     pc = c.shift(1)
+84 |     tr = pd.concat([(h - l), (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+   |
+
+E722 Do not use bare `except`
+   --> app\strategies\xau_momentum.py:181:5
+    |
+179 |     try:
+180 |         return float(os.environ.get(name, str(default)).split("#", 1)[0].strip())
+181 |     except:
+    |     ^^^^^^
+182 |         return default
+    |
+
+E722 Do not use bare `except`
+   --> app\strategies\xau_momentum.py:188:5
+    |
+186 |     try:
+187 |         return int(os.environ.get(name, str(default)).split("#", 1)[0].strip())
+188 |     except:
+    |     ^^^^^^
+189 |         return default
+    |
+
+E741 Ambiguous variable name: `l`
+   --> app\strategies\xau_momentum.py:233:5
+    |
+231 |     d = s.diff()
+232 |     g = d.clip(lower=0)
+233 |     l = -d.clip(upper=0)
+    |     ^
+234 |     ag = g.ewm(alpha=1 / p, min_periods=p, adjust=False).mean()
+235 |     al = l.ewm(alpha=1 / p, min_periods=p, adjust=False).mean()
+    |
+
+E741 Ambiguous variable name: `l`
+   --> app\strategies\xau_momentum.py:241:8
+    |
+240 | def _atr(df: pd.DataFrame, p=14) -> pd.Series:
+241 |     h, l, c = df["high"], df["low"], df["close"]
+    |        ^
+242 |     pc = c.shift(1)
+243 |     tr = pd.concat([(h - l), (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+    |
+
+F811 Redefinition of unused `signal` from line 89
+   --> app\strategies\xau_momentum.py:247:5
+    |
+247 | def signal(symbol: str, timeframe: str = "M15") -> dict[str, Any] | None:
+    |     ^^^^^^ `signal` redefined here
+248 |     df = _rates(symbol, timeframe, 300)
+249 |     if df is None or len(df) < max(EMA_SLOW + 5, 220):
+    |
+   ::: app\strategies\xau_momentum.py:89:5
+    |
+ 88 | # ---------- strategy ----------
+ 89 | def signal(symbol: str, timeframe: str = "M15") -> dict[str, Any] | None:
+    |     ------ previous definition of `signal` here
+ 90 |     df = _rates(symbol, timeframe, 300)
+ 91 |     if df is None or len(df) < max(EMA_SLOW + 5, 220):
+    |
+help: Remove definition: `signal`
+
+PLC0415 `import` should be at the top-level of a file
+  --> app\util\pricing.py:8:5
+   |
+ 7 | def normalize_symbol_key(symbol: str) -> str:
+ 8 |     import re
+   |     ^^^^^^^^^
+ 9 |
+10 |     return re.sub(r"[^A-Z0-9]+", "_", symbol.upper()).strip("_")
+   |
+
+PLC0415 `import` should be at the top-level of a file
+  --> app\util\pricing.py:62:5
+   |
+60 |     if step <= 0:
+61 |         return max(volume, vmin)
+62 |     import math
+   |     ^^^^^^^^^^^
+63 |
+64 |     vol = math.floor(volume / step) * step
+   |
+
+RET504 Unnecessary assignment to `lots` before `return` statement
+  --> app\util\sizing.py:74:12
+   |
+72 |         return None
+73 |     lots = risk_amount / risk_per_lot
+74 |     return lots
+   |            ^^^^
+   |
+help: Remove unnecessary assignment
+
+PLC0415 `import` should be at the top-level of a file
+   --> app\util\sizing.py:100:5
+    |
+ 99 |     # Per-symbol override (works in either mode as a hard cap/fallback)
+100 |     import re
+    |     ^^^^^^^^^
+101 |
+102 |     key = "LOTS_" + re.sub(r"[^A-Z0-9]+", "_", symbol.upper())
+    |
+
+F821 Undefined name `pd`
+  --> app\util\ta.py:13:21
+   |
+11 |     if len(series) < period:
+12 |         return np.array([np.nan] * len(series))
+13 |     return np.array(pd.Series(series).ewm(span=period, adjust=False).mean())
+   |                     ^^
+   |
+
+PLR0912 Too many branches (13 > 12)
+  --> auto_runner.py:84:5
+   |
+84 | def loop():
+   |     ^^^^
+85 |     print(
+86 |         f"[auto] Running. Symbols={SYMBOLS} TF={TIMEFRAME} Period={CADENCE_SEC}s (VERBOSE={'on' if VERBOSE else 'off'})"
+   |
+
+E501 Line too long (120 > 100)
+  --> auto_runner.py:86:101
+   |
+84 | def loop():
+85 |     print(
+86 |         f"[auto] Running. Symbols={SYMBOLS} TF={TIMEFRAME} Period={CADENCE_SEC}s (VERBOSE={'on' if VERBOSE else 'off'})"
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^
+87 |     )
+88 |     while True:
+   |
+
+E501 Line too long (102 > 100)
+   --> auto_runner.py:151:101
+    |
+149 |                     if VERBOSE or status == "ok":
+150 |                         print(
+151 |                             f"[{ts}] {s}: accepted={accepted} status={status} deal={deal} note={note}"
+    |                                                                                                     ^^
+152 |                         )
+153 |                     if accepted and order and status == "ok":
+    |
+
+E722 Do not use bare `except`
+  --> guards.py:14:5
+   |
+12 |     try:
+13 |         return int(os.environ.get(name, str(default)).split("#", 1)[0].strip())
+14 |     except:
+   |     ^^^^^^
+15 |         return default
+   |
+
+E722 Do not use bare `except`
+  --> guards.py:21:5
+   |
+19 |     try:
+20 |         return float(os.environ.get(name, str(default)).split("#", 1)[0].strip())
+21 |     except:
+   |     ^^^^^^
+22 |         return default
+   |
+
+PLR0911 Too many return statements (8 > 6)
+  --> guards.py:25:5
+   |
+25 | def risk_guard(
+   |     ^^^^^^^^^^
+26 |     symbol: str, side: str, sl_pips: float | None = None
+27 | ) -> dict[str, Any]:
+   |
+
+PLR0912 Too many branches (13 > 12)
+  --> guards.py:25:5
+   |
+25 | def risk_guard(
+   |     ^^^^^^^^^^
+26 |     symbol: str, side: str, sl_pips: float | None = None
+27 | ) -> dict[str, Any]:
+   |
+
+E402 Module level import not at top of file
+ --> run_auto.py:6:1
+  |
+4 | load_dotenv()  # pull VERBOSE, AGENT_* etc from .env if you want
+5 |
+6 | import auto_runner  # uses the same auto_runner.py you already have
+  | ^^^^^^^^^^^^^^^^^^
+7 |
+8 | auto_runner.loop()
+  |
+
+SIM108 Use ternary operator `js = http_get("/positions", {"symbol": symbol}) if symbol else http_get("/positions")` instead of `if`-`else`-block
+  --> run_auto_guarded.py:86:9
+   |
+84 |   def open_positions(symbol: str | None):
+85 |       try:
+86 | /         if symbol:
+87 | |             js = http_get("/positions", {"symbol": symbol})
+88 | |         else:
+89 | |             js = http_get("/positions")
+   | |_______________________________________^
+90 |           # Server returns: {"ok": True, "positions": [ ... ]}
+91 |           return js.get("positions", [])
+   |
+help: Replace `if`-`else`-block with `js = http_get("/positions", {"symbol": symbol}) if symbol else http_get("/positions")`
+
+PLR0912 Too many branches (26 > 12)
+   --> run_auto_guarded.py:126:5
+    |
+126 | def main():
+    |     ^^^^
+127 |     log(
+128 |         f"Running. Symbols={SYMBOLS} TF={TIMEFRAME} Period={PERIOD_SEC}s (VERBOSE={'on' if VERBOSE else 'off'})"
+    |
+
+PLR0915 Too many statements (81 > 50)
+   --> run_auto_guarded.py:126:5
+    |
+126 | def main():
+    |     ^^^^
+127 |     log(
+128 |         f"Running. Symbols={SYMBOLS} TF={TIMEFRAME} Period={PERIOD_SEC}s (VERBOSE={'on' if VERBOSE else 'off'})"
+    |
+
+E501 Line too long (112 > 100)
+   --> run_auto_guarded.py:128:101
+    |
+126 | def main():
+127 |     log(
+128 |         f"Running. Symbols={SYMBOLS} TF={TIMEFRAME} Period={PERIOD_SEC}s (VERBOSE={'on' if VERBOSE else 'off'})"
+    |                                                                                                     ^^^^^^^^^^^^
+129 |     )
+    |
+
+E501 Line too long (106 > 100)
+   --> run_auto_guarded.py:198:101
+    |
+196 |                     if VERBOSE:
+197 |                         log(
+198 |                             f"{sym} same-side cooldown active ({side_ls}); {left.seconds}s left; skipping"
+    |                                                                                                     ^^^^^^
+199 |                         )
+200 |                     continue
+    |
+
+PLC0415 `import` should be at the top-level of a file
+   --> run_auto_guarded.py:229:21
+    |
+228 |                 try:
+229 |                     from app.monitor.loss_monitor import monitor_and_close
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+230 |
+231 |                     syms = [
+    |
+
+PLC0415 `import` should be at the top-level of a file
+   --> run_auto_guarded.py:249:21
+    |
+247 |                 # trailing (safe, guarded, idempotent per freq)
+248 |                 try:
+249 |                     from app.monitor.trailing import trail_positions
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+250 |
+251 |                     syms = [
+    |
+
+E501 Line too long (104 > 100)
+   --> run_auto_guarded.py:264:101
+    |
+262 |                         ):
+263 |                             print(
+264 |                                 f"[trail] mode={trep.get('mode')} actions={len(trep.get('actions',[]))}"
+    |                                                                                                     ^^^^
+265 |                             )
+266 |                 except Exception as e:
+    |
+
+PLC0415 `import` should be at the top-level of a file
+  --> run_server.py:10:5
+   |
+ 8 |     load_dotenv()  # loads .env into os.environ
+ 9 |
+10 |     import uvicorn
+   |     ^^^^^^^^^^^^^^
+11 |
+12 |     port = int(os.environ.get("PORT", "8001"))
+   |
+
+PLW2901 `for` loop variable `line` overwritten by assignment target
+  --> tools\analyze_journal.py:19:13
+   |
+17 |     with open(path, encoding="utf-8") as f:
+18 |         for line in f:
+19 |             line = line.strip()
+   |             ^^^^
+20 |             if not line:
+21 |                 continue
+   |
+
+SIM105 Use `contextlib.suppress(Exception)` instead of `try`-`except`-`pass`
+  --> tools\analyze_journal.py:22:13
+   |
+20 |               if not line:
+21 |                   continue
+22 | /             try:
+23 | |                 trades.append(json.loads(line))
+24 | |             except Exception:
+25 | |                 pass
+   | |____________________^
+26 |       if limit:
+27 |           trades = trades[-limit:]
+   |
+help: Replace with `contextlib.suppress(Exception)`
+
+E501 Line too long (107 > 100)
+  --> tools\analyze_journal.py:32:101
+   |
+31 | def kpis(trades):
+32 |     # Expect entries to have: status ('ok'/'error'), symbol, side, price, sl, tp, profit (if you add later)
+   |                                                                                                     ^^^^^^^
+33 |     n = len(trades)
+34 |     ok = sum(1 for t in trades if str(t.get("status")) == "ok")
+   |
+
+Found 95 errors.
+No fixes available (10 hidden fixes can be enabled with the `--unsafe-fixes` option).

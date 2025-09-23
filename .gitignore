@@ -1,0 +1,24 @@
+# Virtual environments
+.venv/
+env/
+__pycache__/
+
+# Secrets
+.env
+*.key
+*.pem
+
+# Logs
+*.log
+logs/
+
+# Data
+data/
+app/journal/
+
+# System files
+.DS_Store
+Thumbs.db
+
+#Backup files
+*.bkp*

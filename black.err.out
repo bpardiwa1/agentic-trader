@@ -1,0 +1,35 @@
+﻿python.exe : would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\agents\auto_decider.py
+At C:\Users\Bomi\AgenticAI\agentic-trader\tools\run-quality.ps1:17 char:1
++ & python -m black --check . *>&1 | Out-File -FilePath $blackLog -Enco ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (would reformat ...auto_decider.py:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\monitor\loss_monitor.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\risk\risk.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\main_force.pay.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\risk copy.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\schemas.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\risk.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\market\data.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\agents\momentum.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\exec\executor_mt5_bkp2.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\strategies\stocks_momentum.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\risk\guards.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\exec\executor.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\util\pricing.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\strategies\bollinger_band_breakout.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\brokers\mt5_client.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\util\sizing.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\monitor\trailing.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\strategies\momentum.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\guards.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\strategies\xau_momentum,bkp.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\auto_runner.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\exec\executor_mt5.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\main.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\app\strategies\xau_momentum.py
+would reformat C:\Users\Bomi\AgenticAI\agentic-trader\run_auto_guarded.py
+
+Oh no! \U0001f4a5 \U0001f494 \U0001f4a5
+26 files would be reformatted, 17 files would be left unchanged.
