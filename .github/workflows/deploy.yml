@@ -6,37 +6,43 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
-    defaults:
-      run:
-        shell: powershell
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create application directory
+      - name: Ensure target directory exists
+        shell: powershell
         run: |
-          if (!(Test-Path "C:\agentic-trader")) {
-            New-Item -ItemType Directory -Path "C:\agentic-trader" | Out-Null
+          if (-not (Test-Path "C:\agentic-trader")) {
+            New-Item -ItemType Directory -Force -Path "C:\agentic-trader" | Out-Null
           }
 
-      - name: Deploy code to VPS
+      - name: Sync repo to C:\agentic-trader
+        shell: powershell
         run: |
-          robocopy $env:GITHUB_WORKSPACE C:\agentic-trader /MIR /XF .env
+          $source = "$env:GITHUB_WORKSPACE"
+          $dest   = "C:\agentic-trader"
 
-      - name: Recreate .env from secret
+          robocopy $source $dest *.* /MIR /XD .git .github\workflows /XF .env
+          $rc = $LASTEXITCODE
+          Write-Host "Robocopy exit code: $rc"
+
+          # Treat 0–3 as success
+          if ($rc -le 3) { exit 0 } else { exit $rc }
+
+      - name: Rebuild .env from GitHub Secret
+        shell: powershell
         run: |
-          $envContent = @"
-          ${{ secrets.ENV_FILE_CONTENT }}
-          "@
-          Set-Content -Path "C:\agentic-trader\.env" -Value $envContent -Encoding UTF8
+          $envFile = "C:\agentic-trader\.env"
+          Set-Content -Path $envFile -Value "${{ secrets.ENV_FILE_CONTENT }}"
+          Write-Host ".env file created at $envFile"
 
       - name: Install dependencies
+        shell: powershell
         run: |
           cd C:\agentic-trader
-          if (!(Test-Path ".venv")) {
-            python -m venv .venv
-          }
+          python -m venv .venv
           .\.venv\Scripts\activate
           pip install --upgrade pip
           pip install -r requirements.txt
