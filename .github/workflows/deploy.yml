@@ -25,15 +25,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:TARGET_ROOT | Out-Null
           Write-Host "TARGET_ROOT = $env:TARGET_ROOT"
 
+      # ---------- THIS is the fixed step ----------
       - name: Recreate .env from secret (multiline-safe, no here-strings)
         run: |
-          $envFile  = Join-Path $env:TARGET_ROOT '.env'
-          # Pull the secret as JSON so newlines are escaped safely in YAML,
-          # then convert back to the original multiline string.
-          $envJson  = '${{ toJSON(secrets.ENV_FILE_CONTENT) }}'
-          $content  = ConvertFrom-Json $envJson
+          $envFile = Join-Path $env:TARGET_ROOT '.env'
+          $json    = '${{ toJSON(secrets.ENV_FILE_CONTENT) }}'  # one-line JSON string
+          $content = ConvertFrom-Json $json                     # back to original multiline
           Set-Content -Path $envFile -Value $content -Encoding UTF8 -NoNewline
-          Write-Host "Wrote .env to $envFile"
+          # quick peek (first 10 lines) so you can verify it rendered correctly
+          Get-Content $envFile -TotalCount 10 | ForEach-Object { "ENV: $_" }
 
       - name: Sync code to target (robocopy)
         run: |
@@ -48,19 +48,14 @@ jobs:
 
           robocopy @args
           $code = $LASTEXITCODE
-          if ($code -le 3) {
-            Write-Host "Robocopy completed with code $code (treated as success)."
-            exit 0
-          } else {
-            Write-Error "Robocopy failed with code $code"
-            exit $code
-          }
+          if ($code -le 3) { Write-Host "Robocopy completed with code $code (treated as success)."; exit 0 }
+          else { Write-Error "Robocopy failed with code $code"; exit $code }
 
       - name: Setup Python venv and install deps (explicit python.exe)
         run: |
-          $python  = $env:PY_EXE
+          $python = $env:PY_EXE
           if (-not (Test-Path $python)) { throw "Configured PY_EXE not found: $python" }
-          $venv    = Join-Path $env:TARGET_ROOT $env:VENV_DIR
+          $venv = Join-Path $env:TARGET_ROOT $env:VENV_DIR
           & $python -m venv $venv
           & (Join-Path $venv 'Scripts\python.exe') -m pip install --upgrade pip
           & (Join-Path $venv 'Scripts\pip.exe') install -r (Join-Path $env:TARGET_ROOT 'requirements.txt')
