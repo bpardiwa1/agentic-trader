@@ -1,108 +1,87 @@
-name: Deploy to VPS
+name: Deploy to VPS (manual)
 
 on:
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: powershell
+
+env:
+  # Where the app lives on the VPS
+  TARGET_ROOT: 'C:\agentic-trader'
+  # Use the explicit Python you already have installed
+  PY_EXE: 'C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe'
+  # Name for the venv (inside TARGET_ROOT)
+  VENV_DIR: '.venv'
+
 jobs:
   deploy:
-    runs-on: [self-hosted, Windows, X64]
+    runs-on: self-hosted
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Ensure target dir exists
-        shell: powershell
         run: |
-          $targetRoot = 'C:\agentic-trader'
-          New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
-          Write-Host "Ensured $targetRoot exists"
-
-      - name: Sync repo to target (RoboCopy; 0–3 = success)
-        shell: powershell
-        run: |
-          $src = "$((Get-Location).Path)\"
-          $dst = 'C:\agentic-trader'
-          $log = Join-Path $env:TEMP "robocopy-$(Get-Date -Format yyyyMMdd-HHmmss).log"
-
-          # Exclude git, venvs, .env (we recreate from secret)
-          $args = @(
-            $src, $dst, '/MIR',
-            '/XD', '.git', '.github\.git', '.github\workflows', '.venv',
-            '/XF', '.env',
-            '/R:3','/W:5','/NFL','/NDL','/NP','/NJH','/NJS','/NC','/NS'
-          )
-
-          Write-Host "Running: robocopy $($args -join ' ')"
-          $p = Start-Process -FilePath robocopy.exe -ArgumentList $args -Wait -PassThru -NoNewWindow -RedirectStandardOutput $log
-          $code = $p.ExitCode
-          Get-Content $log | Write-Host
-
-          if ($code -le 3) {
-            Write-Host "RoboCopy completed with code $code (treated as success)."
-          } else {
-            throw "RoboCopy failed with exit code $code."
-          }
+          New-Item -ItemType Directory -Force -Path $env:TARGET_ROOT | Out-Null
+          Write-Host "TARGET_ROOT = $env:TARGET_ROOT"
 
       - name: Recreate .env from secret (multiline-safe)
-        shell: powershell
-        env:
-          ENV_FILE_CONTENT: ${{ secrets.ENV_FILE_CONTENT }}
         run: |
-          $envFile = 'C:\agentic-trader\.env'
-          if (-not $env:ENV_FILE_CONTENT) { throw "Secret ENV_FILE_CONTENT is empty or missing." }
+          $envFile = Join-Path $env:TARGET_ROOT '.env'
+          "@
+          ${{ secrets.ENV_FILE_CONTENT }}
+          "@ | Set-Content -Path $envFile -Encoding UTF8 -NoNewline
+          Write-Host "Wrote .env to $envFile"
 
-          # Write exactly what’s in the secret (no extra comment lines)
-          New-Item -ItemType File -Force -Path $envFile | Out-Null
-          Set-Content -Path $envFile -Value $env:ENV_FILE_CONTENT -NoNewline -Encoding ASCII
-          Write-Host ".env written to $envFile (size: $((Get-Item $envFile).Length) bytes)"
-
-      - name: Setup Python venv and install deps
-        shell: powershell
+      - name: Sync code to target (robocopy)
         run: |
-          $root = 'C:\agentic-trader'
-          Set-Location $root
+          $src = "$PWD"
+          $dst = $env:TARGET_ROOT
+          $excludeFiles = @('.env', '.gitignore')
+          $excludeDirs  = @('.git', '.github\workflows', '.venv', 'data', '__pycache__')
 
-          if (-not (Test-Path .venv)) {
-            Write-Host "Creating venv..."
-            python.exe -3 -m venv .venv
-          }
+          $xf = $excludeFiles | ForEach-Object { "/XF `"$($_)`"" } | Out-String
+          $xd = $excludeDirs  | ForEach-Object { "/XD `"$($_)`"" } | Out-String
 
-          & .\.venv\Scripts\python.exe -m pip install --upgrade pip
-          if (Test-Path "$root\requirements.txt") {
-            & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+          $args = @($src, $dst, '*.*', '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:3', '/W:5')
+          if ($xf.Trim()) { $args += $excludeFiles | ForEach-Object { '/XF'; $_ } }
+          if ($xd.Trim()) { $args += $excludeDirs  | ForEach-Object { '/XD'; $_ } }
+
+          robocopy @args
+          $code = $LASTEXITCODE
+          # robocopy returns 1 when only file metadata changes or copies were made (success)
+          if ($code -le 3) {
+            Write-Host "Robocopy completed with code $code (treated as success)."
+            exit 0
           } else {
-            Write-Host "requirements.txt not found; installing core deps"
-            & .\.venv\Scripts\python.exe -m pip install fastapi uvicorn pydantic python-dotenv pandas MetaTrader5 requests websockets wsproto
+            Write-Error "Robocopy failed with code $code"
+            exit $code
           }
 
-      - name: Sanity check app imports
-        shell: powershell
+      - name: Setup Python venv and install deps (using explicit python.exe)
         run: |
-          $py = 'C:\agentic-trader\.venv\Scripts\python.exe'
-          $code = @"
-              import os
-                from dotenv import load_dotenv
-                load_dotenv(r'C:\agentic-trader\.env')
-                print('[env] PORT=', os.getenv('PORT'))
-                print('[env] AGENT_SYMBOLS=', os.getenv('AGENT_SYMBOLS'))
-                # Quick import smoke test
-                import app.main
-                print('[import] app.main OK')
-            "@  
-                & $py - << $code
+          $python = $env:PY_EXE
+          if (-not (Test-Path $python)) {
+            throw "Configured PY_EXE not found: $python"
+          }
+          $venvPath = Join-Path $env:TARGET_ROOT $env:VENV_DIR
+          & $python -m venv $venvPath
+          & (Join-Path $venvPath 'Scripts\python.exe') -m pip install --upgrade pip
+          & (Join-Path $venvPath 'Scripts\pip.exe') install -r (Join-Path $env:TARGET_ROOT 'requirements.txt')
 
-      # --- Optional: manual control of services (keep disabled for now) ---
-      # - name: Stop services (manual control)
-      #   if: ${{ false }}
-      #   shell: powershell
-      #   run: |
-      #     nssm stop AgenticTraderAPI
-      #     nssm stop AgenticTraderAuto
-
-      # - name: Start services (manual control)
-      #   if: ${{ false }}
-      #   shell: powershell
-      #   run: |
-      #     nssm start AgenticTraderAPI
-      #     nssm start AgenticTraderAuto
+      - name: Sanity check app imports (loads .env)
+        run: |
+          $venvPy = Join-Path (Join-Path $env:TARGET_ROOT $env:VENV_DIR) 'Scripts\python.exe'
+          $py = @"
+          import os
+          from dotenv import load_dotenv
+          load_dotenv(r'$env:TARGET_ROOT\.env')
+          print('[env] PORT =', os.getenv('PORT'))
+          print('[env] AGENT_SYMBOLS =', os.getenv('AGENT_SYMBOLS'))
+          import app.main
+          print('[import] app.main OK')
+          "@
+          & $venvPy - << $py
