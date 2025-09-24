@@ -1,48 +1,77 @@
-name: Deploy Agentic Trader
+name: Deploy to VPS
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   deploy:
     runs-on: self-hosted
-
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ensure target directory exists
-        shell: powershell
+      - name: Ensure target dir exists & grant perms
+        shell: pwsh
         run: |
-          if (-not (Test-Path "C:\agentic-trader")) {
-            New-Item -ItemType Directory -Force -Path "C:\agentic-trader" | Out-Null
-          }
+          $targetRoot = 'C:\agentic-trader'
+          New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
+          try {
+            icacls $targetRoot /grant "NT AUTHORITY\SYSTEM:(OI)(CI)F" /T /C | Out-Null
+            icacls $targetRoot /grant "$($env:USERNAME):(OI)(CI)F" /T /C | Out-Null
+          } catch { Write-Host "Perms step skipped: $($_.Exception.Message)" }
 
-      - name: Sync repo to C:\agentic-trader
-        shell: powershell
+      - name: Sync repo to target (robocopy)
+        shell: pwsh
         run: |
-          $source = "$env:GITHUB_WORKSPACE"
-          $dest   = "C:\agentic-trader"
+          $src = "$env:GITHUB_WORKSPACE"
+          $dst = "C:\agentic-trader"
+          $args = @("$src", $dst, "*.*", "/S","/E","/DCOPY:DA","/COPY:DAT","/PURGE","/MIR","/R:1000000","/W:30","/XD",".git",".github\workflows",".venv")
+          robocopy @args
+          $code = $LASTEXITCODE
+          if ($code -le 3) { Write-Host "Robocopy completed with code $code (treated as success)" }
+          else { throw "Robocopy failed with exit code $code" }
 
-          robocopy $source $dest *.* /MIR /XD .git .github\workflows /XF .env
-          $rc = $LASTEXITCODE
-          Write-Host "Robocopy exit code: $rc"
-
-          # Treat 0–3 as success
-          if ($rc -le 3) { exit 0 } else { exit $rc }
-
-      - name: Rebuild .env from GitHub Secret
-        shell: powershell
+      - name: Recreate .env from secret (multiline-safe)
+        shell: pwsh
+        env:
+          ENV_FILE_CONTENT: ${{ secrets.ENV_FILE_CONTENT }}
         run: |
           $envFile = "C:\agentic-trader\.env"
-          Set-Content -Path $envFile -Value "${{ secrets.ENV_FILE_CONTENT }}"
-          Write-Host ".env file created at $envFile"
+          $content = [Environment]::GetEnvironmentVariable('ENV_FILE_CONTENT')
+          if ([string]::IsNullOrWhiteSpace($content)) {
+            throw "ENV_FILE_CONTENT secret is empty or not available to runner"
+          }
+          # Normalize newlines to CRLF so MT5 / editors on Windows are happy
+          $normalized = $content -replace "`r?`n","`r`n"
+          [System.IO.File]::WriteAllText($envFile, $normalized, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "Wrote $envFile ($([System.IO.File]::ReadAllLines($envFile).Length) lines)"
 
-      - name: Install dependencies
-        shell: powershell
+      - name: Setup Python venv and install deps
+        shell: cmd
+        working-directory: C:\agentic-trader
         run: |
-          cd C:\agentic-trader
-          python -m venv .venv
-          .\.venv\Scripts\activate
-          pip install --upgrade pip
+          if not exist .venv (
+            py -3 -m venv .venv
+          )
+          call .venv\Scripts\activate
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # Optional sanity check; safe no-op
+      - name: Sanity check app imports
+        shell: cmd
+        working-directory: C:\agentic-trader
+        run: |
+          call .venv\Scripts\activate
+          python - <<PY
+          import importlib, sys
+          for m in ["app.main","app.agents.auto_decider","app.strategies.momentum"]:
+              try:
+                  importlib.import_module(m)
+                  print("[ok]", m)
+              except Exception as e:
+                  print("[warn]", m, "->", e, file=sys.stderr)
+          PY
+
+      # NOTE: We are NOT stopping/starting services here to avoid disrupting live trades.
+      # You can add a controlled restart later if/when you want.
