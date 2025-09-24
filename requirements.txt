@@ -6,3 +6,10 @@ pandas==2.2.2
 MetaTrader5==5.0.5260
 requests
 python-dotenv
+websockets
+wsproto
+numpy>=1.26.4
+loguru==0.7.2
+matplotlib==3.9.2
+anyio==4.4.0
+scipy>=1.14.0
