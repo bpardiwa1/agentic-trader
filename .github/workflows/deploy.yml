@@ -81,16 +81,16 @@ jobs:
         run: |
           $py = 'C:\agentic-trader\.venv\Scripts\python.exe'
           $code = @"
-import os
-from dotenv import load_dotenv
-load_dotenv(r'C:\agentic-trader\.env')
-print('[env] PORT=', os.getenv('PORT'))
-print('[env] AGENT_SYMBOLS=', os.getenv('AGENT_SYMBOLS'))
-# Quick import smoke test
-import app.main
-print('[import] app.main OK')
-"@
-          & $py - << $code
+              import os
+                from dotenv import load_dotenv
+                load_dotenv(r'C:\agentic-trader\.env')
+                print('[env] PORT=', os.getenv('PORT'))
+                print('[env] AGENT_SYMBOLS=', os.getenv('AGENT_SYMBOLS'))
+                # Quick import smoke test
+                import app.main
+                print('[import] app.main OK')
+            "@  
+                & $py - << $code
 
       # --- Optional: manual control of services (keep disabled for now) ---
       # - name: Stop services (manual control)
