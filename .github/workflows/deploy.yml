@@ -10,18 +10,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ensure target dir exists & grant perms
+      - name: Ensure target dir exists
         shell: powershell
         run: |
           $targetRoot = 'C:\agentic-trader'
           New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
-          try {
-            icacls $targetRoot /grant "NT AUTHORITY\SYSTEM:(OI)(CI)F" /T /C | Out-Null
-            icacls $targetRoot /grant "$($env:USERNAME):(OI)(CI)F" /T /C | Out-Null
-          } catch { Write-Host "Perms step skipped: $($_.Exception.Message)" }
+          Write-Host "Ensured $targetRoot exists"
+
 
       - name: Sync repo to target (robocopy)
-        shell: pwsh
+        shell: powershell
         run: |
           $src = "$env:GITHUB_WORKSPACE"
           $dst = "C:\agentic-trader"
@@ -32,7 +30,7 @@ jobs:
           else { throw "Robocopy failed with exit code $code" }
 
       - name: Recreate .env from secret (multiline-safe)
-        shell: pwsh
+        shell: powershell
         env:
           ENV_FILE_CONTENT: ${{ secrets.ENV_FILE_CONTENT }}
         run: |
