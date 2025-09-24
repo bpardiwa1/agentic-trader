@@ -1,11 +1,12 @@
 name: Deploy to VPS
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 jobs:
   deploy:
-    runs-on: self-hosted
+    runs-on: [self-hosted, Windows, X64]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,59 +18,91 @@ jobs:
           New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
           Write-Host "Ensured $targetRoot exists"
 
-
-      - name: Sync repo to target (robocopy)
+      - name: Sync repo to target (RoboCopy; 0–3 = success)
         shell: powershell
         run: |
-          $src = "$env:GITHUB_WORKSPACE"
-          $dst = "C:\agentic-trader"
-          $args = @("$src", $dst, "*.*", "/S","/E","/DCOPY:DA","/COPY:DAT","/PURGE","/MIR","/R:1000000","/W:30","/XD",".git",".github\workflows",".venv")
-          robocopy @args
-          $code = $LASTEXITCODE
-          if ($code -le 3) { Write-Host "Robocopy completed with code $code (treated as success)" }
-          else { throw "Robocopy failed with exit code $code" }
+          $src = "$((Get-Location).Path)\"
+          $dst = 'C:\agentic-trader'
+          $log = Join-Path $env:TEMP "robocopy-$(Get-Date -Format yyyyMMdd-HHmmss).log"
+
+          # Exclude git, venvs, .env (we recreate from secret)
+          $args = @(
+            $src, $dst, '/MIR',
+            '/XD', '.git', '.github\.git', '.github\workflows', '.venv',
+            '/XF', '.env',
+            '/R:3','/W:5','/NFL','/NDL','/NP','/NJH','/NJS','/NC','/NS'
+          )
+
+          Write-Host "Running: robocopy $($args -join ' ')"
+          $p = Start-Process -FilePath robocopy.exe -ArgumentList $args -Wait -PassThru -NoNewWindow -RedirectStandardOutput $log
+          $code = $p.ExitCode
+          Get-Content $log | Write-Host
+
+          if ($code -le 3) {
+            Write-Host "RoboCopy completed with code $code (treated as success)."
+          } else {
+            throw "RoboCopy failed with exit code $code."
+          }
 
       - name: Recreate .env from secret (multiline-safe)
         shell: powershell
         env:
           ENV_FILE_CONTENT: ${{ secrets.ENV_FILE_CONTENT }}
         run: |
-          $envFile = "C:\agentic-trader\.env"
-          $content = [Environment]::GetEnvironmentVariable('ENV_FILE_CONTENT')
-          if ([string]::IsNullOrWhiteSpace($content)) {
-            throw "ENV_FILE_CONTENT secret is empty or not available to runner"
-          }
-          # Normalize newlines to CRLF so MT5 / editors on Windows are happy
-          $normalized = $content -replace "`r?`n","`r`n"
-          [System.IO.File]::WriteAllText($envFile, $normalized, [System.Text.UTF8Encoding]::new($false))
-          Write-Host "Wrote $envFile ($([System.IO.File]::ReadAllLines($envFile).Length) lines)"
+          $envFile = 'C:\agentic-trader\.env'
+          if (-not $env:ENV_FILE_CONTENT) { throw "Secret ENV_FILE_CONTENT is empty or missing." }
+
+          # Write exactly what’s in the secret (no extra comment lines)
+          New-Item -ItemType File -Force -Path $envFile | Out-Null
+          Set-Content -Path $envFile -Value $env:ENV_FILE_CONTENT -NoNewline -Encoding ASCII
+          Write-Host ".env written to $envFile (size: $((Get-Item $envFile).Length) bytes)"
 
       - name: Setup Python venv and install deps
-        shell: cmd
-        working-directory: C:\agentic-trader
+        shell: powershell
         run: |
-          if not exist .venv (
+          $root = 'C:\agentic-trader'
+          Set-Location $root
+
+          if (-not (Test-Path .venv)) {
+            Write-Host "Creating venv..."
             py -3 -m venv .venv
-          )
-          call .venv\Scripts\activate
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          }
 
-      # Optional sanity check; safe no-op
+          & .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          if (Test-Path "$root\requirements.txt") {
+            & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+          } else {
+            Write-Host "requirements.txt not found; installing core deps"
+            & .\.venv\Scripts\python.exe -m pip install fastapi uvicorn pydantic python-dotenv pandas MetaTrader5 requests websockets wsproto
+          }
+
       - name: Sanity check app imports
-        shell: cmd
-        working-directory: C:\agentic-trader
+        shell: powershell
         run: |
-          call .venv\Scripts\activate
-          python - <<PY
-          import importlib, sys
-          for m in ["app.main","app.agents.auto_decider","app.strategies.momentum"]:
-              try:
-                  importlib.import_module(m)
-                  print("[ok]", m)
-              except Exception as e:
-                  print("[warn]", m, "->", e, file=sys.stderr)
-          PY
+          $py = 'C:\agentic-trader\.venv\Scripts\python.exe'
+          $code = @"
+import os
+from dotenv import load_dotenv
+load_dotenv(r'C:\agentic-trader\.env')
+print('[env] PORT=', os.getenv('PORT'))
+print('[env] AGENT_SYMBOLS=', os.getenv('AGENT_SYMBOLS'))
+# Quick import smoke test
+import app.main
+print('[import] app.main OK')
+"@
+          & $py - << $code
 
-      # NOTE: We are NOT stopping/starting services here to avoid disrupting live trades.
-      # You can add a controlled restart later if/when you want.
+      # --- Optional: manual control of services (keep disabled for now) ---
+      # - name: Stop services (manual control)
+      #   if: ${{ false }}
+      #   shell: powershell
+      #   run: |
+      #     nssm stop AgenticTraderAPI
+      #     nssm stop AgenticTraderAuto
+
+      # - name: Start services (manual control)
+      #   if: ${{ false }}
+      #   shell: powershell
+      #   run: |
+      #     nssm start AgenticTraderAPI
+      #     nssm start AgenticTraderAuto
