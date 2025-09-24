@@ -8,11 +8,8 @@ defaults:
     shell: powershell
 
 env:
-  # Where the app lives on the VPS
   TARGET_ROOT: 'C:\agentic-trader'
-  # Use the explicit Python you already have installed
   PY_EXE: 'C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe'
-  # Name for the venv (inside TARGET_ROOT)
   VENV_DIR: '.venv'
 
 jobs:
@@ -28,12 +25,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:TARGET_ROOT | Out-Null
           Write-Host "TARGET_ROOT = $env:TARGET_ROOT"
 
-      - name: Recreate .env from secret (multiline-safe)
+      - name: Recreate .env from secret (multiline-safe, no here-strings)
         run: |
-          $envFile = Join-Path $env:TARGET_ROOT '.env'
-          "@
-          ${{ secrets.ENV_FILE_CONTENT }}
-          "@ | Set-Content -Path $envFile -Encoding UTF8 -NoNewline
+          $envFile  = Join-Path $env:TARGET_ROOT '.env'
+          # Pull the secret as JSON so newlines are escaped safely in YAML,
+          # then convert back to the original multiline string.
+          $envJson  = '${{ toJSON(secrets.ENV_FILE_CONTENT) }}'
+          $content  = ConvertFrom-Json $envJson
+          Set-Content -Path $envFile -Value $content -Encoding UTF8 -NoNewline
           Write-Host "Wrote .env to $envFile"
 
       - name: Sync code to target (robocopy)
@@ -43,16 +42,12 @@ jobs:
           $excludeFiles = @('.env', '.gitignore')
           $excludeDirs  = @('.git', '.github\workflows', '.venv', 'data', '__pycache__')
 
-          $xf = $excludeFiles | ForEach-Object { "/XF `"$($_)`"" } | Out-String
-          $xd = $excludeDirs  | ForEach-Object { "/XD `"$($_)`"" } | Out-String
-
           $args = @($src, $dst, '*.*', '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:3', '/W:5')
-          if ($xf.Trim()) { $args += $excludeFiles | ForEach-Object { '/XF'; $_ } }
-          if ($xd.Trim()) { $args += $excludeDirs  | ForEach-Object { '/XD'; $_ } }
+          if ($excludeFiles.Count) { $args += @('/XF') + $excludeFiles }
+          if ($excludeDirs.Count)  { $args += @('/XD') + $excludeDirs  }
 
           robocopy @args
           $code = $LASTEXITCODE
-          # robocopy returns 1 when only file metadata changes or copies were made (success)
           if ($code -le 3) {
             Write-Host "Robocopy completed with code $code (treated as success)."
             exit 0
@@ -61,27 +56,21 @@ jobs:
             exit $code
           }
 
-      - name: Setup Python venv and install deps (using explicit python.exe)
+      - name: Setup Python venv and install deps (explicit python.exe)
         run: |
-          $python = $env:PY_EXE
-          if (-not (Test-Path $python)) {
-            throw "Configured PY_EXE not found: $python"
-          }
-          $venvPath = Join-Path $env:TARGET_ROOT $env:VENV_DIR
-          & $python -m venv $venvPath
-          & (Join-Path $venvPath 'Scripts\python.exe') -m pip install --upgrade pip
-          & (Join-Path $venvPath 'Scripts\pip.exe') install -r (Join-Path $env:TARGET_ROOT 'requirements.txt')
+          $python  = $env:PY_EXE
+          if (-not (Test-Path $python)) { throw "Configured PY_EXE not found: $python" }
+          $venv    = Join-Path $env:TARGET_ROOT $env:VENV_DIR
+          & $python -m venv $venv
+          & (Join-Path $venv 'Scripts\python.exe') -m pip install --upgrade pip
+          & (Join-Path $venv 'Scripts\pip.exe') install -r (Join-Path $env:TARGET_ROOT 'requirements.txt')
 
       - name: Sanity check app imports (loads .env)
         run: |
-          $venvPy = Join-Path (Join-Path $env:TARGET_ROOT $env:VENV_DIR) 'Scripts\python.exe'
-          $py = @"
-          import os
-          from dotenv import load_dotenv
-          load_dotenv(r'$env:TARGET_ROOT\.env')
-          print('[env] PORT =', os.getenv('PORT'))
-          print('[env] AGENT_SYMBOLS =', os.getenv('AGENT_SYMBOLS'))
-          import app.main
-          print('[import] app.main OK')
-          "@
-          & $venvPy - << $py
+          $venvPy  = Join-Path (Join-Path $env:TARGET_ROOT $env:VENV_DIR) 'Scripts\python.exe'
+          $envPath = Join-Path $env:TARGET_ROOT '.env'
+          $cmd = "import os; from dotenv import load_dotenv; load_dotenv(r'$envPath'); " +
+                 "print('[env] PORT =', os.getenv('PORT')); " +
+                 "print('[env] AGENT_SYMBOLS =', os.getenv('AGENT_SYMBOLS')); " +
+                 "import app.main; print('[import] app.main OK')"
+          & $venvPy -c $cmd
