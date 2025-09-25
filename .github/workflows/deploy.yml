@@ -1,4 +1,4 @@
-name: Deploy to VPS (manual)
+name: New Deploy to VPS (manual)
 
 on:
   workflow_dispatch:
