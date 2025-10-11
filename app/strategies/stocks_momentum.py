@@ -1,26 +1,39 @@
-# app/agents/auto_decider.py
-from collections.abc import Callable
+# app/strategies/stocks_momentum.py
+from __future__ import annotations
+
 from typing import Any
 
-from app.strategies import fx_momentum, index_breakout, stocks_momentum, xau_momentum
+import pandas as pd
 
-# registry: first match that returns True wins
-REGISTRY: list[
-    tuple[Callable[[str], bool], Callable[[str, str], dict[str, Any] | None]]
-] = [
-    (lambda s: s.upper().startswith("XAU"), xau_momentum.signal),  # Gold
-    (lambda s: s.upper().startswith("EURUSD"), fx_momentum.signal),  # EURUSD FX
-    (lambda s: s in ("MSFT", "AAPL", "NVDA"), stocks_momentum.signal),  # Stocks
-    (lambda s: s.startswith("NAS100"), index_breakout.signal),  # Index
-]
+from app.strategies.equities_momentum import equities_momentum_signal
+from app.strategies.fx_momentum import momentum_signal as fx_momentum_signal
+from app.strategies.indices_momentum import indices_momentum_signal
+from app.strategies.xau_momentum import xau_momentum_signal
 
 
-def decide_signal(
-    symbol: str, timeframe: str = "M15", agent: str = "auto"
+def stocks_momentum_signal(
+    symbol: str,
+    timeframe: str,
+    df: pd.DataFrame,
+    env: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    sym = symbol.upper()
-    for predicate, strat in REGISTRY:
-        if predicate(sym):
-            return strat(symbol, timeframe)
-    # fallback: FX
-    return fx_momentum.signal(symbol, timeframe)
+    """
+    Dispatcher: route stocks/indices/fx/xau symbols to the right momentum strategy.
+    """
+
+    symu = symbol.upper()
+
+    if symu.endswith(("USD", "JPY", "EUR", "GBP")):
+        # FX → needs (symbol, timeframe, df)
+        return fx_momentum_signal(symbol, timeframe, df)
+
+    if "XAU" in symu or "GOLD" in symu:
+        # Gold → needs (df, symbol, env)
+        return xau_momentum_signal(df, symbol, env)
+
+    if symu in ("US30", "NAS100", "GER40", "SPX500"):
+        # Indices → needs (df, symbol, env)
+        return indices_momentum_signal(df, symbol, env)
+
+    # Default: equities → needs (symbol, timeframe, df)
+    return equities_momentum_signal(symbol, timeframe, df)

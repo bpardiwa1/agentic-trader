@@ -1,38 +1,19 @@
 # app/risk/guards.py
 from __future__ import annotations
 
+import datetime as dt
 import os
-import time
-from typing import Any
+from typing import Any, cast
 
-# --- broker imports (defensive) ---
-from app.brokers.mt5_client import get_positions  # required
+import MetaTrader5 as _mt5
 
-# Optional imports: if missing, guards still work with safe fallbacks.
-try:
-    from app.brokers.mt5_client import is_symbol_trading_now  # type: ignore
-except Exception:  # pragma: no cover
-    def is_symbol_trading_now(symbol: str) -> dict[str, Any]:
-        return {
-            "tradable": True,
-            "market_open": True,
-            "note": "mt5_client.is_symbol_trading_now not available",
-        }
+# Treat MT5 as dynamic for type-checking (silences Pylance attr warnings)
+mt5: Any = cast(Any, _mt5)
 
-try:
-    from app.brokers.mt5_client import get_account_info  # type: ignore
-except Exception:  # pragma: no cover
-    def get_account_info() -> dict[str, Any]:
-        return {}
-
-
+# ---------------- Env helpers ----------------
 _TRUE = {"1", "true", "yes", "on"}
-_LAST_REJECT_MIN: dict[str, int] = {}
 
 
-# -----------------------------
-# Env readers (dynamic)
-# -----------------------------
 def _env_bool(name: str, default: bool) -> bool:
     raw = (os.getenv(name) or ("1" if default else "0")).strip().lower()
     return raw in _TRUE
@@ -52,174 +33,198 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _now_min() -> int:
-    return int(time.time() // 60)
+def _normalize_key(s: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in (s or "").upper())
 
 
-def _cooldown_min() -> int:
-    return _env_int("AGENT_COOLDOWN_MIN", 10)
+def _now_utc() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
 
 
-def _market_check_enabled() -> bool:
-    return _env_bool("AGENT_MARKET_CHECK", True)
+# ---------------- Data access helpers ----------------
+def _positions(symbol: str | None = None) -> list[Any]:
+    return list(mt5.positions_get(symbol=symbol)) if symbol else list(mt5.positions_get())
 
 
-def _block_same_side_enabled() -> bool:
-    return _env_bool("AGENT_BLOCK_SAME_SIDE", True)
+def _account_equity() -> float:
+    acc = mt5.account_info()
+    if not acc:
+        return 0.0
+    eq = float(getattr(acc, "equity", 0.0))
+    if eq > 0:
+        return eq
+    return float(getattr(acc, "balance", 0.0))
 
 
-def _per_symbol_cap() -> int:
-    return _env_int("AGENT_MAX_PER_SYMBOL", 2)
+def _daily_pnl() -> float:
+    acc = mt5.account_info()
+    realized = float(getattr(acc, "profit", 0.0)) if acc else 0.0
+
+    flt = 0.0
+    for p in _positions():
+        flt += float(getattr(p, "profit", 0.0))
+
+    return realized + flt
 
 
-def _global_cap() -> int:
-    return _env_int("AGENT_MAX_OPEN", 6)
+def _floating_symbol_pnl(symbol: str) -> float:
+    total = 0.0
+    for p in _positions(symbol):
+        total += float(getattr(p, "profit", 0.0))
+    return total
 
 
-def _min_symbol_floating_pnl() -> float:
-    return _env_float("MIN_SYMBOL_FLOATING_PNL", -9999.0)
+def _market_is_open(symbol: str) -> bool:
+    info = mt5.symbol_info(symbol)
+    if not info:
+        return False
+    if not getattr(info, "visible", True):
+        mt5.symbol_select(symbol, True)
 
+    tick = mt5.symbol_info_tick(symbol)
+    if not tick:
+        return False
 
-def _equity_floor() -> float:
-    return _env_float("EQUITY_FLOOR", 0.0)
-
-
-def _daily_loss_limit() -> float:
-    return _env_float("DAILY_LOSS_LIMIT", 0.0)
-
-
-# -----------------------------
-# Helpers
-# -----------------------------
-def _clean_positions(raw: Any) -> list[dict[str, Any]]:
-    """
-    Ensure positions is a list of dicts. Unknown shapes are skipped to avoid .get() errors.
-    """
-    out: list[dict[str, Any]] = []
-    if not raw:
-        return out
-    if isinstance(raw, dict):
-        out.append(raw)
-        return out
-    if not isinstance(raw, list):
-        print(f"[risk_guard] unexpected positions type: {type(raw)} -> {raw}")
-        return out
-    for pos in raw:
-        if isinstance(pos, dict):
-            out.append(pos)
-        else:
-            print(f"[risk_guard] unexpected position entry type: {type(pos)} -> {pos}")
-    return out
-
-
-def _same_side(pos_side: str | None) -> str:
-    s = (pos_side or "").upper()
-    if s in ("BUY", "LONG"):
-        return "LONG"
-    if s in ("SELL", "SHORT"):
-        return "SHORT"
-    return ""
-
-
-# -----------------------------
-# Main guard
-# -----------------------------
-def risk_guard(symbol: str, side: str, sl_pips: float | None) -> dict[str, Any]:
-    """
-    Central pre-trade guard. Returns {"accepted": bool, "note": "..."}.
-    Dynamically honors runtime env variables without restart.
-    """
-    requested_side = (side or "").upper()
-    if requested_side not in ("LONG", "SHORT"):
-        return {"accepted": False, "note": "invalid side"}
-
-    now_minute = _now_min()
-    cooldown_min = _cooldown_min()
-    last_reject = _LAST_REJECT_MIN.get(symbol, 0)
-
-    # --- cooldown after previous reject (soft) ---
-    if cooldown_min > 0 and (now_minute - last_reject) < cooldown_min:
-        return {
-            "accepted": False,
-            "note": f"cooldown {symbol} ({cooldown_min}m) after last reject",
-        }
-
-    # --- 0) market / trading hours gate (optional) ---
-    if _market_check_enabled():
-        try:
-            info = is_symbol_trading_now(symbol)
-            tradable = bool(info.get("tradable", True))
-            market_open = bool(info.get("market_open", True))
-            if not (tradable and market_open):
-                _LAST_REJECT_MIN[symbol] = now_minute
-                return {"accepted": False, "note": f"{symbol} appears closed; skipping"}
-        except Exception as exc:
-            # non-fatal
-            print(f"[risk_guard] market_check error: {exc}")
-
-    # --- 1) exposure caps ---
-    per_symbol_cap = _per_symbol_cap()
-    global_cap = _global_cap()
-    block_same = _block_same_side_enabled()
-
+    last = getattr(tick, "time_msc", None) or getattr(tick, "time", None)
+    if not last:
+        return True
     try:
-        sym_positions_raw = get_positions(symbol)
-        all_positions_raw = get_positions(None)
-    except Exception as exc:
-        _LAST_REJECT_MIN[symbol] = now_minute
-        return {"accepted": False, "note": f"positions_error: {exc}"}
-
-    sym_positions = _clean_positions(sym_positions_raw)
-    all_positions = _clean_positions(all_positions_raw)
-
-    if len(sym_positions) >= per_symbol_cap:
-        _LAST_REJECT_MIN[symbol] = now_minute
-        return {
-            "accepted": False,
-            "note": f"{symbol} per-symbol cap reached ({per_symbol_cap})",
-        }
-
-    if len(all_positions) >= global_cap:
-        _LAST_REJECT_MIN[symbol] = now_minute
-        return {"accepted": False, "note": f"global cap reached ({global_cap})"}
-
-    if block_same:
-        for pos in sym_positions:
-            pos_side = _same_side(pos.get("side") or pos.get("type") or pos.get("type_desc"))
-            if pos_side and pos_side == requested_side:
-                _LAST_REJECT_MIN[symbol] = now_minute
-                return {"accepted": False, "note": f"{symbol} same-side open; skipping"}
-
-    # --- 2) floating PnL floor per symbol ---
-    min_symbol_pnl = _min_symbol_floating_pnl()
-    try:
-        floating = sum(float(p.get("profit", 0.0)) for p in sym_positions)
+        ts = float(last) / (1000.0 if last > 10**12 else 1.0)
+        age = _now_utc() - dt.datetime.fromtimestamp(ts, tz=dt.UTC)
+        return age <= dt.timedelta(minutes=5)
     except Exception:
-        floating = 0.0
-    if floating < min_symbol_pnl:
-        _LAST_REJECT_MIN[symbol] = now_minute
-        return {
-            "accepted": False,
-            "note": f"{symbol} floating PnL {floating:.2f} < {min_symbol_pnl}; guard",
-        }
+        return True
 
-    # --- 3) account-level guards ---
-    account: dict[str, Any] = {}
-    try:
-        account = get_account_info() or {}
-    except Exception as exc:
-        print(f"[risk_guard] get_account_info error: {exc}")
 
-    eq_floor = _equity_floor()
-    if account and eq_floor > 0.0:
-        eq_val = float(account.get("equity", account.get("Equity", 0.0)) or 0.0)
-        if eq_val and eq_val < eq_floor:
-            _LAST_REJECT_MIN[symbol] = now_minute
-            return {"accepted": False, "note": f"equity {eq_val:.2f} < floor {eq_floor:.2f}"}
+# ---------------- Cooldown bookkeeping ----------------
+_last_trade_at: dict[str, dt.datetime] = {}
 
-    daily_lim = _daily_loss_limit()
-    if account and daily_lim > 0.0:
-        # TODO: plug your real daily PnL check here, if/when available.
-        pass
 
-    return {"accepted": True, "note": "ok"}
+def note_trade(symbol: str) -> None:
+    _last_trade_at[_normalize_key(symbol)] = _now_utc()
+
+
+def _cooldown_remaining(symbol: str, cooldown_min: int) -> float:
+    if cooldown_min <= 0:
+        return 0.0
+    key = _normalize_key(symbol)
+    last = _last_trade_at.get(key)
+    if not last:
+        return 0.0
+    passed = (_now_utc() - last).total_seconds() / 60.0
+    remain = float(cooldown_min) - passed
+    return remain if remain > 0.0 else 0.0
+
+
+# ---------------- Guard checks ----------------
+def _cap_current_open() -> tuple[int, int]:
+    max_all = _env_int("MAX_OPEN_POSITIONS", _env_int("AGENT_MAX_OPEN", 0))
+    cur_all = len(_positions())
+    return cur_all, max_all
+
+
+def _cap_symbol_open(symbol: str) -> tuple[int, int]:
+    max_sym = _env_int("MAX_TRADES_PER_SYMBOL", _env_int("AGENT_MAX_PER_SYMBOL", 0))
+    cur_sym = len(_positions(symbol))
+    return cur_sym, max_sym
+
+
+def _same_side_block(symbol: str, side: str) -> bool:
+    if not _env_bool("AGENT_BLOCK_SAME_SIDE", False):
+        return False
+    want_buy = (side or "").upper() == "LONG"
+    for p in _positions(symbol):
+        is_buy = int(getattr(p, "type", 0)) == getattr(mt5, "POSITION_TYPE_BUY", 0)
+        if is_buy == want_buy:
+            return True
+    return False
+
+
+def _exposure_side_count(symbol: str, side: str) -> int:
+    want_buy = (side or "").upper() == "LONG"
+    n = 0
+    for p in _positions(symbol):
+        is_buy = int(getattr(p, "type", 0)) == getattr(mt5, "POSITION_TYPE_BUY", 0)
+        if is_buy == want_buy:
+            n += 1
+    return n
+
+
+def _exposure_side_cap(symbol: str, side: str) -> tuple[int, int]:
+    key = f"MAX_PER_SIDE_{_normalize_key(symbol)}"
+    sym_cap = _env_int(key, 0)
+    if sym_cap > 0:
+        return _exposure_side_count(symbol, side), sym_cap
+    return _exposure_side_count(symbol, side), _env_int("AGENT_MAX_PER_SIDE", 0)
+
+
+# ---------------- Public API ----------------
+def check_pretrade_guards(symbol: str, side: str) -> dict[str, Any]:
+    reasons: list[str] = []
+    caps: dict[str, Any] = {}
+
+    if _env_bool("AGENT_MARKET_CHECK", True) and not _market_is_open(symbol):
+        reasons.append("market_closed_or_stale")
+
+    cd_min = _env_int("AGENT_COOLDOWN_MIN", 0)
+    cd_left = _cooldown_remaining(symbol, cd_min)
+    caps["cooldown_min"] = cd_min
+    caps["cooldown_left_min"] = round(cd_left, 2)
+    if cd_left > 0.0:
+        reasons.append("cooldown_active")
+
+    cur_all, max_all = _cap_current_open()
+    cur_sym, max_sym = _cap_symbol_open(symbol)
+    caps["open_all"] = cur_all
+    caps["cap_all"] = max_all
+    caps["open_symbol"] = cur_sym
+    caps["cap_symbol"] = max_sym
+
+    if max_all > 0 and cur_all >= max_all:
+        reasons.append("max_open_reached")
+    if max_sym > 0 and cur_sym >= max_sym:
+        reasons.append("per_symbol_cap_reached")
+
+    side_open, side_cap = _exposure_side_cap(symbol, side)
+    caps["open_side"] = side_open
+    caps["cap_side"] = side_cap
+    if side_cap > 0 and side_open >= side_cap:
+        reasons.append("per_side_cap_reached")
+
+    if _same_side_block(symbol, side):
+        reasons.append("same_side_blocked")
+
+    eq = _account_equity()
+    floor = _env_float("EQUITY_FLOOR", 0.0)
+    caps["equity"] = round(eq, 2)
+    caps["equity_floor"] = floor
+    if floor > 0.0 and eq <= floor:
+        reasons.append("equity_floor_breached")
+
+    daily_loss_limit = _env_float("DAILY_LOSS_LIMIT", 0.0)
+    daily_pnl_val = _daily_pnl()
+    caps["daily_pnl"] = round(daily_pnl_val, 2)
+    caps["daily_loss_limit"] = daily_loss_limit
+    if daily_loss_limit > 0.0 and daily_pnl_val <= -abs(daily_loss_limit):
+        reasons.append("daily_loss_limit_hit")
+
+    min_symbol_flt = _env_float("MIN_SYMBOL_FLOATING_PNL", 0.0)
+    flt = _floating_symbol_pnl(symbol)
+    caps["symbol_floating_pnl"] = round(flt, 2)
+    caps["symbol_floating_min"] = min_symbol_flt
+    if min_symbol_flt < 0.0 and flt <= min_symbol_flt:
+        reasons.append("symbol_floating_under_min")
+
+    ok = not reasons
+    return {"ok": ok, "why": reasons, "caps": caps}
+
+
+# ---- Back-compat export (main.py expects risk_guard) ----
+risk_guard = check_pretrade_guards
+
+# Optional: define _all_ so static analyzers know what's exported
+_all_ = [
+    "check_pretrade_guards",
+    "note_trade",
+    "risk_guard",
+]

@@ -1,671 +1,363 @@
-# app/main.py
-try:
-    from dotenv import load_dotenv
+# ==============================================================
+# Agentic Trader - Main Runtime
+# Updated: 2025-10-08
+# Purpose: Central orchestrator for trade automation, scheduling,
+# guardrails, and detailed runtime diagnostics.
+# ==============================================================
 
-    load_dotenv()
-except Exception:
-    pass
-# app/main.py (imports)
-import datetime
+from __future__ import annotations
+
+import asyncio
+import contextlib
 import json
+import logging
 import os
-import re
-from contextlib import suppress
-from typing import Any, Literal
+from datetime import datetime
+from typing import Any
+from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Query, Request
-from pydantic import BaseModel
+import MetaTrader5 as _mt5
+from dotenv import load_dotenv
+from fastapi import FastAPI
 
-from app import config
-from app.agents.auto_decider import decide_signal
-from app.brokers import mt5_client as mt5c          # alias style
-from app.brokers.mt5_client import warmup_history  # only if this exists (see step 3)
-from app.exec.executor import execute_market_order as execute_order, close_all
-from app.market.data import compute_context, get_rates  # ensure these exist (step 2)
-from app.monitor.trailing import trail_positions
-from app.risk.guards import risk_guard
-from app.util.sizing import compute_lot, lots_override_for
-from app.brokers.mt5_client import get_positions
-from app.monitor.loss_monitor import monitor_and_close
+from app.agents.auto_decider import _classify_asset, decide_signal
+from app.brokers.mt5_client import place_order as mt5_place_order
+
+# --------------------------------------------------------------
+# Load environment dynamically
+# --------------------------------------------------------------
+asset = os.getenv("ASSET", "FX")
+merged_env = os.path.join(os.path.dirname(__file__), "env", ".merged", f"env.{asset}.merged.env")
+
+if os.path.exists(merged_env):
+    load_dotenv(merged_env)
+    print(f"[ENV] Loaded merged env: {merged_env}")
+else:
+    print(f"[ENV] No merged env found at {merged_env}")
+
+mt5: Any = _mt5
+app = FastAPI()
+MYTZ = ZoneInfo("Asia/Kuala_Lumpur")
+
+# --------------------------------------------------------------
+# Logging
+# --------------------------------------------------------------
+LOG_ROOT = "logs"
+os.makedirs(LOG_ROOT, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(os.path.join(LOG_ROOT, "agentic.log"), encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
+
+LOG_DIRS = {
+    "FX": os.path.join(LOG_ROOT, "fx"),
+    "XAU": os.path.join(LOG_ROOT, "xau"),
+    "INDEX": os.path.join(LOG_ROOT, "indices"),
+    "EQUITY": os.path.join(LOG_ROOT, "equities"),
+}
+for path in LOG_DIRS.values():
+    os.makedirs(path, exist_ok=True)
+
+state_file = os.path.join(LOG_ROOT, "last_trade_state.json")
 
 
-# If you still call get_positions directly in main.py, either:
-#  - change usages to mt5c.get_positions(...)
-#  - OR add: from app.brokers.mt5_client import get_positions
+# --------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------
+def _norm_symbol(s: str | None) -> str:
+    """Normalize symbols to uppercase and consistent formatting."""
+    if not s:
+        return ""
+    return s.strip().replace(" ", "").replace("-", "_").upper()
 
 
-
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv()
-except Exception:
-    pass
-
-# Optional: make MT5 import robust so app can start even if MT5 lib is missing
-try:
-    import MetaTrader5 as mt5
-except Exception:
-    mt5 = None  # type: ignore
-
-app = FastAPI(title="Agentic Trader Universal")
+# --------------------------------------------------------------
+# Helpers for log routing
+# --------------------------------------------------------------
+def _get_log_paths(symbol: str, env: dict[str, Any] | None):
+    cls = _classify_asset(symbol, env)
+    executed = os.path.join(LOG_DIRS.get(cls, LOG_ROOT), "trades.executed.log")
+    rejected = os.path.join(LOG_DIRS.get(cls, LOG_ROOT), "trades.rejected.log")
+    return executed, rejected
 
 
-# ----------------------------- Models -----------------------------------------
+def _log_trade(kind: str, symbol: str, sig: dict[str, Any], env: dict[str, Any] | None = None):
+    executed_log, rejected_log = _get_log_paths(symbol, env)
+    ts = datetime.now(MYTZ).strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts} [{kind.upper()}] {symbol} -> {sig}\n"
+    with open(executed_log if kind == "executed" else rejected_log, "a", encoding="utf-8") as f:
+        f.write(line)
 
 
-class MarketOrder(BaseModel):
-    symbol: str
-    side: Literal["LONG", "SHORT", "BUY", "SELL"]
-    price: float | None = (
-        None  # accepted by API; executor will use live tick if None/0
+# --------------------------------------------------------------
+# Persistent trade state
+# --------------------------------------------------------------
+def _save_state(state: dict[str, datetime]):
+    with open(state_file, "w", encoding="utf-8") as f:
+        json.dump({k: v.astimezone(MYTZ).isoformat() for k, v in state.items()}, f)
+
+
+def _load_state() -> dict[str, datetime]:
+    if not os.path.exists(state_file):
+        return {}
+    try:
+        with open(state_file, encoding="utf-8") as f:
+            data = json.load(f)
+        return {k: datetime.fromisoformat(v) for k, v in data.items()}
+    except Exception as e:
+        logger.warning("Failed to load state: %s", e)
+        return {}
+
+
+# --------------------------------------------------------------
+# Trading window and guardrails
+# --------------------------------------------------------------
+def within_trading_window(symbol: str, env: dict[str, Any]) -> bool:
+    cls = _classify_asset(symbol, env)
+    now = datetime.now(MYTZ)
+    weekday = now.weekday() + 1
+    current_time = now.time()
+
+    defaults = {
+        "FX": ("00:00", "23:59", "1,2,3,4,5"),
+        "XAU": ("00:00", "23:59", "1,2,3,4,5"),
+        "INDEX": ("21:30", "23:30", "1,2,3,4,5"),
+    }
+
+    start_t = datetime.strptime(
+        env.get(f"{cls}_TRADING_WINDOW_START", defaults[cls][0]), "%H:%M"
+    ).time()
+    end_t = datetime.strptime(
+        env.get(f"{cls}_TRADING_WINDOW_END", defaults[cls][1]), "%H:%M"
+    ).time()
+    days = [int(x) for x in env.get(f"{cls}_TRADING_DAYS", defaults[cls][2]).split(",")]
+    return weekday in days and start_t <= current_time <= end_t
+
+
+def _check_guardrails(symbol: str, open_positions, max_open, max_per_symbol, cooldown_min):
+    sym_key = _norm_symbol(symbol)
+    total_open = len(open_positions) or 0
+
+    # Normalize MT5 position symbols before comparing
+    sym_positions = []
+    for p in open_positions or []:
+        try:
+            psym = _norm_symbol(getattr(p, "symbol", ""))
+        except Exception:
+            psym = ""
+        if psym == sym_key:
+            sym_positions.append(p)
+
+    if total_open >= max_open:
+        return f"max open positions reached ({total_open}/{max_open})"
+    if len(sym_positions) >= max_per_symbol:
+        return f"max open positions per symbol reached ({len(sym_positions)}/{max_per_symbol})"
+
+    last_time = last_trade_time.get(sym_key)
+    if last_time and (datetime.now(MYTZ) - last_time).total_seconds() < cooldown_min * 60:
+        return "cooldown active"
+
+    logger.debug(
+        "[GUARDRAILS] %s -> total_open=%s sym_open=%s cooldown=%s",
+        symbol,
+        total_open,
+        len(sym_positions),
+        (datetime.now(MYTZ) - last_trade_time[sym_key]).total_seconds()
+        if sym_key in last_trade_time and last_trade_time[sym_key] is not None
+        else None,
     )
-    volume: float | None = None  # you can send volume or size
-    size: float | None = None
-    sl_pips: float | None = None
-    tp_pips: float | None = None
-    comment: str | None = None
+    return None
 
 
-# ----------------------------- Health & MT5 -----------------------------------
+# --------------------------------------------------------------
+# Unified order execution (with enhanced order normalization)
+# --------------------------------------------------------------
+def place_order(symbol: str, sig: dict[str, Any]):
+    """Unified execution wrapper delegating to app.brokers.mt5_client.place_order()."""
+    try:
+        preview = sig.get("preview", {})
+        side = preview.get("side", "").upper()
+        if not side:
+            return {"ok": False, "error": "missing_side"}
+
+        order_req = {
+            "symbol": symbol,
+            "side": side,
+            "sl_pips": float(preview.get("sl_pips", 0)),
+            "tp_pips": float(preview.get("tp_pips", 0)),
+        }
+
+        result = mt5_place_order(order_req)
+
+        # --- Normalize order ID so logs never show 'None' ---
+        if isinstance(result, dict):
+            if "order" not in result and "ticket" in result:
+                result["order"] = result["ticket"]
+            elif "order" not in result and isinstance(result.get("result"), dict):
+                order_id = result["result"].get("order") or result["result"].get("deal")
+                if order_id:
+                    result["order"] = order_id
+            if "order" not in result:
+                result["order"] = "<unknown>"
+
+        return result
+
+    except Exception as e:
+        logger.exception("Error in place_order for %s: %s", symbol, e)
+        return {"ok": False, "error": str(e)}
+
+
+# --------------------------------------------------------------
+# Trade loop
+# --------------------------------------------------------------
+last_trade_time: dict[str, datetime] = _load_state()
+last_regime_state: dict[str, str] = {}
+startup_time = datetime.now(MYTZ)
+
+
+async def trade_loop():
+    symbols = os.getenv("AGENT_SYMBOLS", "EURUSD-ECNc").split(",")
+    period = int(os.getenv("AGENT_PERIOD_SEC", "60"))
+    cooldown_min = int(os.getenv("AGENT_COOLDOWN_MIN", "2"))
+    max_per_symbol = int(os.getenv("AGENT_MAX_PER_SYMBOL", "2"))
+    max_open = int(os.getenv("AGENT_MAX_OPEN", "6"))
+    grace_min = int(os.getenv("AGENT_STARTUP_GRACE_MIN", "3"))
+    require_new_regime = os.getenv("AGENT_REQUIRE_NEW_REGIME", "false").lower() == "true"
+    verbose = os.getenv("VERBOSE", "true").lower() == "true"
+
+    logger.info("Starting trade loop for symbols: %s", symbols)
+    grace_logged = False
+
+    async def handle_symbol(symbol, open_positions):
+        env = dict(os.environ)
+        if not within_trading_window(symbol, env):
+            _log_trade("rejected", symbol, {"reason": "outside trading window"}, env)
+            return
+
+        reason = _check_guardrails(symbol, open_positions, max_open, max_per_symbol, cooldown_min)
+        if reason:
+            _log_trade("rejected", symbol, {"reason": reason}, env)
+            return
+
+        sig = decide_signal(symbol=symbol, timeframe=os.getenv("AGENT_TIMEFRAME", "H1"), env=env)
+        preview = sig.get("preview", {})
+        dbg = preview.get("debug", {})
+
+        if verbose:
+            logger.info(
+                "[DEBUG] %s regime=%s | side=%s | EMA_FAST=%.5f | EMA_SLOW=%.5f | RSI=%.2f | eps=%.5f | why=%s",
+                symbol,
+                preview.get("note", ""),
+                preview.get("side", ""),
+                dbg.get("ema_fast", 0.0),
+                dbg.get("ema_slow", 0.0),
+                dbg.get("rsi", 0.0),
+                dbg.get("eps", 0.0),
+                preview.get("why", []),
+            )
+
+        current_regime = preview.get("note", "")
+        if require_new_regime and last_regime_state.get(symbol) == current_regime:
+            _log_trade("rejected", symbol, {"reason": "same regime"}, env)
+            return
+        last_regime_state[symbol] = current_regime
+
+        if sig.get("accepted") and preview.get("side"):
+            current_positions = mt5.positions_get() or []
+            reason = _check_guardrails(
+                symbol, current_positions, max_open, max_per_symbol, cooldown_min
+            )
+            if reason:
+                _log_trade("rejected", symbol, {"reason": reason}, env)
+                return
+
+            result = place_order(symbol, sig)
+            if result.get("ok"):
+                logger.info(
+                    "[EXECUTED] %s -> %s %s | SL=%.1f TP=%.1f | why=%s | order=%s ret=%s",
+                    symbol,
+                    preview.get("note", ""),
+                    preview.get("side", ""),
+                    preview.get("sl_pips", 0),
+                    preview.get("tp_pips", 0),
+                    preview.get("why", []),
+                    result.get("order"),
+                    result.get("retcode"),
+                )
+                sym_key = _norm_symbol(symbol)
+                last_trade_time[sym_key] = datetime.now(MYTZ)
+                _save_state(last_trade_time)
+                _log_trade("executed", symbol, {"signal": sig, "broker": result}, env)
+            else:
+                logger.warning("[%s] order failed: %s", symbol, result.get("error"))
+                _log_trade("rejected", symbol, {"signal": sig, "error": result}, env)
+        else:
+            _log_trade("rejected", symbol, sig, env)
+
+    while True:
+        try:
+            if (datetime.now(MYTZ) - startup_time).total_seconds() < grace_min * 60:
+                logger.info("[SKIP] Startup grace period active")
+                await asyncio.sleep(period)
+                continue
+            if not grace_logged:
+                logger.info("[TIME] Grace period ended — trading active")
+                grace_logged = True
+
+            open_positions = mt5.positions_get() or []
+            for symbol in symbols:
+                await handle_symbol(symbol, open_positions)
+
+        except Exception as e:
+            logger.exception("Error in trade_loop: %s", e)
+
+        for h in logger.handlers:
+            with contextlib.suppress(Exception):
+                h.flush()
+        await asyncio.sleep(period)
+
+
+# --------------------------------------------------------------
+# FastAPI endpoints
+# --------------------------------------------------------------
+tasks: list[asyncio.Task] = []
+
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("===== ENV DEBUG DUMP =====")
+    for k, v in os.environ.items():
+        if k.startswith(("INDICES_", "FX_", "XAU_")):
+            logger.info("%s=%s", k, v)
+    logger.info("==========================")
+
+    tasks.append(asyncio.create_task(trade_loop()))
+
+
+@app.get("/agents/decide")
+def decide_agent(symbol: str, agent: str | None = None) -> dict[str, Any]:
+    return decide_signal(
+        symbol=symbol,
+        timeframe=os.getenv("AGENT_TIMEFRAME", "H1"),
+        agent=agent,
+        env=dict(os.environ),
+    ) or {"accepted": False, "error": "no signal"}
+
+
+@app.get("/mt5/ping")
+def mt5_ping() -> dict[str, Any]:
+    try:
+        tick = mt5.symbol_info_tick("EURUSD")
+        return {"ok": True, "tick": tick._asdict() if tick else None}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "mode": config.EXECUTION_MODE, "backend": config.BROKER_BACKEND}
-
-
-@app.get("/mt5/ping")
-def mt5_ping():
-    # fixed: use the mt5c alias you already import
-    return mt5c.init_and_login()
-
-
-@app.get("/mt5/search_symbols")
-def mt5_search_symbols(q: str = Query(..., min_length=1)):
-    return mt5c.search_symbols(q)
-
-
-@app.get("/mt5/is_open")
-def mt5_is_open(symbol: str):
-    return mt5c.is_symbol_trading_now(symbol)
-
-
-@app.get("/mt5/symbol_info")
-def mt5_symbol_info(symbol: str):
-    return mt5c.symbol_info_dict(symbol)
-
-
-# ----------------------------- Market Context ---------------------------------
-
-
-@app.get("/market/context")
-def market_context(symbol: str = "EURUSD", tf: str = "H1"):
-    # fixed: compute_context is now properly imported
-    return compute_context(symbol, tf, 300)
-
-
-# ----------------------------- Sizing helpers ---------------------------------
-
-
-def _lots_for(symbol: str, default_lots: float = 0.01) -> float:
-    """Read LOTS_<SYMBOL> override from env (normalize to A-Z0-9 underscore)."""
-    key = "LOTS_" + re.sub(r"[^A-Z0-9]+", "_", symbol.upper())
-    try:
-        return float(os.environ.get(key, str(default_lots)).split("#", 1)[0].strip())
-    except Exception:
-        return default_lots
-
-
-def _default_lots() -> float:
-    try:
-        return float(
-            os.environ.get("MT5_DEFAULT_LOTS", "0.01").split("#", 1)[0].strip()
-        )
-    except Exception:
-        return 0.01
-
-
-# ----------------------------- Agent Decide -----------------------------------
-
-
-@app.get("/agents/decide")
-def agents_decide(
-    symbol: str,
-    tf: str = "H1",
-    agent: str = "auto",
-    execute: bool = False,
-):
-    try:
-        sig = decide_signal(symbol=symbol, timeframe=tf, agent=agent) or {}
-        side = (sig.get("side") or "").upper()
-        size_in = sig.get("size")  # may be None or non-float
-        sl_pips = sig.get("sl_pips")
-        tp_pips = sig.get("tp_pips")
-        entry = sig.get("entry")
-        note = sig.get("note") or sig.get("reason") or agent
-    except Exception as e:
-        return {"accepted": False, "error": f"strategy_error: {e}"}
-
-    if side not in ("LONG", "SHORT"):
-        return {
-            "accepted": False,
-            "note": "no trade signal",
-            "debug": sig.get("debug"),
-            "why": sig.get("why"),
-        }
-
-    # --- SIZING: env override -> strategy -> default ---
-    default_lots = _default_lots()
-    env_lots = lots_override_for(symbol, default_lots)
-    override = (
-        os.environ.get("OVERRIDE_STRATEGY_SIZE", "1").strip().lower()
-        in ("1", "true", "yes")
-    )
-
-    # Resolve to a concrete float for mypy/runtime safety
-    if size_in is None or override:
-        resolved_size = env_lots
-    else:
-        try:
-            resolved_size = float(size_in)
-        except Exception:
-            resolved_size = env_lots  # fallback if strategy returned something odd
-
-    size = float(resolved_size)
-
-    preview = {
-        "symbol": symbol,
-        "side": side,
-        "size": size,
-        "sl_pips": sl_pips,
-        "tp_pips": tp_pips,
-        "entry": entry,
-        "timeframe": tf,
-        "agent": agent,
-        "note": note,
-        "sizing": {
-            "default_lots": default_lots,
-            "env_lots": env_lots,
-            "override": override,
-        },
-    }
-
-    if not execute:
-        return {"accepted": True, "preview": preview, "note": note}
-
-    # Guardrails
-    guard = risk_guard(symbol, side, sl_pips)
-    if not guard["accepted"]:
-        return {"accepted": False, "note": guard["note"], "preview": preview}
-
-    try:
-        order_res = execute_order(
-            symbol=symbol,
-            side=side,
-            volume=size,
-            sl_pips=sl_pips,
-            tp_pips=tp_pips,
-            comment=f"{agent}:{note}",
-        )
-        return {"accepted": True, "order": order_res, "note": note}
-    except Exception as e:
-        return {
-            "accepted": True,
-            "order": {"status": "error", "error": f"execution_error: {e}"},
-            "note": note,
-        }
-
-
-# ----------------------------- Orders -----------------------------------------
-
-
-@app.post("/orders/market")
-def orders_market(order: MarketOrder):
-    """Manual order with basic validation & caps (guardrails via env sizing)."""
-    side = (order.side or "").upper()
-    if side == "LONG":
-        side = "BUY"
-    elif side == "SHORT":
-        side = "SELL"
-    if side not in ("BUY", "SELL"):
-        return {"status": "error", "error": "invalid_side"}
-
-    # caps & defaults
-    try:
-        min_lot = float(os.getenv("MIN_LOT", "0.01"))
-        max_lot = float(os.getenv("MAX_LOT", "1.0"))
-        default_lots = float(os.getenv("MT5_DEFAULT_LOTS", "0.01"))
-    except Exception:
-        min_lot, max_lot, default_lots = 0.01, 1.0, 0.01
-
-    explicit = order.volume or order.size
-    lot_mode = (os.getenv("LOT_MODE", "fixed") or "fixed").lower()
-
-    if explicit is not None:
-        lot = float(explicit)
-    elif lot_mode == "risk" and order.sl_pips not in (None, 0):
-        lot = compute_lot(order.symbol, float(order.sl_pips), mode="risk")
-    else:
-        lot = lots_override_for(order.symbol, default_lots)
-
-    # clamp
-    lot = max(min_lot, min(max_lot, float(lot)))
-
-    return execute_order(
-        symbol=order.symbol,
-        side=side,
-        volume=float(lot),
-        sl_pips=order.sl_pips,
-        tp_pips=order.tp_pips,
-        comment=order.comment or "manual",
-    )
-
-
-@app.post("/orders/close")
-def orders_close(
-    symbol: str | None = None,
-    ticket: int | None = None,
-    volume: float | None = None,
-):
-    # If ticket is provided, close that exact position directly via MT5
-    if ticket is not None:
-        if mt5 is None:
-            return {
-                "closed": 0,
-                "reports": [],
-                "message": "MetaTrader5 not available on this host",
-            }
-        pos_list = mt5.positions_get()
-        if not pos_list:
-            return {"closed": 0, "reports": [], "message": "no open positions"}
-        target = [p for p in pos_list if getattr(p, "ticket", None) == ticket]
-        if not target:
-            return {"closed": 0, "reports": [], "message": f"ticket {ticket} not found"}
-        p = target[0]
-        order_type = (
-            mt5.ORDER_TYPE_SELL
-            if p.type == mt5.POSITION_TYPE_BUY
-            else mt5.ORDER_TYPE_BUY
-        )
-        tick = mt5.symbol_info_tick(p.symbol)
-        if not tick:
-            return {
-                "closed": 0,
-                "reports": [{"ticket": ticket, "status": "error", "error": "no_tick"}],
-            }
-        price = tick.bid if order_type == mt5.ORDER_TYPE_SELL else tick.ask
-        req = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": p.symbol,
-            "position": p.ticket,
-            "volume": float(volume or p.volume),
-            "type": order_type,
-            "price": price,
-            "deviation": 50,
-            "comment": "close_ticket",
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        res = mt5.order_send(req)
-        ok = bool(res and res.retcode == mt5.TRADE_RETCODE_DONE)
-        return {
-            "closed": 1 if ok else 0,
-            "reports": [
-                {
-                    "ticket": ticket,
-                    "status": "ok" if ok else "error",
-                    "retcode": getattr(res, "retcode", None),
-                }
-            ],
-        }
-
-    # Otherwise close by symbol (or all) via broker layer
-    return close_all(symbol=symbol, volume=volume)
-
-
-# Unsafe direct market order (no guardrails). Renamed to avoid duplicate path.
-@app.post("/orders/market/unsafe")
-def orders_market_unsafe(order: MarketOrder):
-    """Direct manual order (no guardrails)."""
-    side = (order.side or "").upper()
-    if side == "LONG":
-        side = "BUY"
-    elif side == "SHORT":
-        side = "SELL"
-
-    lot = order.volume or order.size or _default_lots()
-
-    return execute_order(
-        symbol=order.symbol,
-        side=side,
-        volume=float(lot),
-        sl_pips=order.sl_pips,
-        tp_pips=order.tp_pips,
-        comment=order.comment or "manual",
-    )
-
-
-# ----------------------------- Positions --------------------------------------
-
-
-@app.get("/positions")
-def positions(symbol: str | None = None):
-    if config.BROKER_BACKEND != "mt5":
-        return {"ok": True, "positions": []}
-    return get_positions(symbol)
-
-
-@app.post("/positions/close_all")
-def positions_close_all(symbol: str):
-    return close_all(symbol=symbol)
-
-
-# ----------------------------- Journal ----------------------------------------
-
-
-@app.get("/journal/today")
-def journal_today(limit: int = 50):
-    day = datetime.datetime.now().strftime("%Y-%m-%d")
-    path = os.path.join(config.DATA_DIR, f"trades-{day}.json")
-    if not os.path.exists(path):
-        return {"ok": True, "summary": {"count": 0}, "trades": []}
-
-    trades: list[dict[str, Any]] = []
-    with open(path, encoding="utf-8") as fh:
-        for raw in fh:
-            line = raw.strip()
-            if not line:
-                continue
-            with suppress(Exception):
-                trades.append(json.loads(line))
-
-    count = len(trades)
-    wins = sum(1 for t in trades if str(t.get("status")) == "ok")
-    paper = sum(1 for t in trades if t.get("paper"))
-    return {
-        "ok": True,
-        "summary": {"count": count, "ok": wins, "paper": paper},
-        "trades": trades[-limit:],
-    }
-
-
-# ----------------------------- Inspect (candles/lot) --------------------------
-
-_TF_MAP: dict[str, Any] = {}
-if mt5 is not None:
-    _TF_MAP = {
-        "M1": mt5.TIMEFRAME_M1,
-        "M5": mt5.TIMEFRAME_M5,
-        "M15": mt5.TIMEFRAME_M15,
-        "M30": mt5.TIMEFRAME_M30,
-        "H1": mt5.TIMEFRAME_H1,
-        "H4": mt5.TIMEFRAME_H4,
-        "D1": mt5.TIMEFRAME_D1,
-    }
-
-
-def _tf_to_mt5(tf: str) -> int:
-    if mt5 is None:
-        return 0
-    return _TF_MAP.get((tf or "M15").upper(), mt5.TIMEFRAME_M15)
-
-
-@app.get("/inspect/candles")
-def inspect_candles(symbol: str, tf: str = "M15", n: int = 20):
-    df = get_rates(symbol, tf, n)
-    if df is None or getattr(df, "empty", False):
-        return {"ok": False, "error": f"No data for {symbol} {tf}"}
-    return {
-        "ok": True,
-        "symbol": symbol,
-        "tf": tf,
-        "count": len(df),
-        "candles": df.tail(5).to_dict(orient="records"),  # show last 5 bars
-    }
-
-
-@app.get("/inspect/lot")
-def inspect_lot(symbol: str):
-    resolved = lots_override_for(symbol, float(os.getenv("MT5_DEFAULT_LOTS", "0.01")))
-    key = "LOTS_" + re.sub(r"[^A-Z0-9]+", "_", symbol.upper())
-    return {
-        "symbol": symbol,
-        "env_key": key,
-        "env_val": os.getenv(key),
-        "resolved": resolved,
-    }
-
-
-# ----------------------------- Monitors ---------------------------------------
-
-
-@app.post("/monitor/loss")
-def monitor_loss(symbols: str = ""):
-    """
-    POST /monitor/loss?symbols=EURUSD-ECNc,XAUUSD-ECNc
-    Runs the loss monitor once for the given symbols (comma-separated).
-    If blank, uses AGENT_SYMBOLS from env.
-    """
-    if not symbols:
-        symbols = (os.getenv("AGENT_SYMBOLS") or "").strip()
-    syms = [s.strip() for s in symbols.split(",") if s.strip()]
-    if not syms:
-        return {"ok": False, "error": "no symbols provided"}
-    report = monitor_and_close(syms)
-    return {"ok": True, "report": report}
-
-
-# ...top of file unchanged...
-
-# --- helpers to parse query params ---
-def _qbool(v, default=False):
-    if v is None:
-        return default
-    s = str(v).strip().lower()
-    return s in {"1", "true", "yes", "on"}
-
-def _qfloat(v, default=None):
-    if v is None or v == "":
-        return default
-    try:
-        return float(v)
-    except Exception:
-        return default
-
-def _qint(v, default=None):
-    if v is None or v == "":
-        return default
-    try:
-        return int(float(v))
-    except Exception:
-        return default
-
-# --- /monitor/trail (POST) ---
-@app.post("/monitor/trail")
-def monitor_trail(request: Request):
-    qp = request.query_params
-
-    # required
-    symbols_raw = qp.get("symbols", "")
-    syms = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-    if not syms:
-        return {"ok": False, "error": "no symbols provided"}
-
-    # optional overrides (all keyword-only in trail_positions)
-    kwargs: dict[str, Any] = {}
-
-    # booleans
-    kwargs["force"] = _qbool(qp.get("force"), False)
-    only_profit = qp.get("only_profit")
-    req_bias = qp.get("req_bias")
-    if only_profit is not None:
-        kwargs["only_profit"] = _qbool(only_profit, True)
-    if req_bias is not None:
-        kwargs["req_bias"] = _qbool(req_bias, True)
-
-    # strings
-    mode = qp.get("mode")
-    if mode:
-        kwargs["mode"] = mode.upper()
-
-    # numbers
-    ap = _qint(qp.get("atr_period"))
-    am = _qfloat(qp.get("atr_mult"))
-    tp = _qfloat(qp.get("trail_pips"))
-    sp = _qfloat(qp.get("start_pips"))
-    lp = _qfloat(qp.get("lock_pips"))
-    step = _qfloat(qp.get("step_pips"))
-    fm = _qint(qp.get("freq_min"))
-
-    if ap is not None:
-        kwargs["atr_period"] = ap
-    if am is not None:
-        kwargs["atr_mult"] = am
-    if tp is not None:
-        kwargs["trail_pips"] = tp
-    if sp is not None:
-        kwargs["start_pips"] = sp
-    if lp is not None:
-        kwargs["lock_pips"] = lp
-    if step is not None:
-        kwargs["step_pips"] = step
-    if fm is not None:
-        kwargs["freq_min"] = fm
-
-    # call the monitor
-    try:
-        return trail_positions(syms, **kwargs)
-    except Exception as e:
-        # keep the API resilient
-        return {"ok": False, "error": f"trail_positions error: {e.__class__.__name__}: {e}"}
-
-
-# ----------------------------- Warmup -----------------------------------------
-
-
-@app.get("/mt5/warmup")
-def mt5_warmup(
-    symbol: str, tf: str = Query("M15"), bars: int = Query(600, ge=50, le=5000)
-):
-    return warmup_history(symbol, tf, bars)
-
-
-@app.get("/mt5/warmup_many")
-def mt5_warmup_many(
-    symbols: str, tf: str = Query("M15"), bars: int = Query(600, ge=50, le=5000)
-):
-    results = []
-    for s in [x.strip() for x in symbols.split(",") if x.strip()]:
-        results.append(warmup_history(s, tf, bars))
-    return {"ok": all(r.get("ok") for r in results), "results": results}
-
-
-# ----------------------------- Momentum Inspector -----------------------------
-
-import numpy as np
-
-
-def _envf(name: str, default: float) -> float:
-    try:
-        return float((os.getenv(name) or str(default)).split("#", 1)[0].strip())
-    except Exception:
-        return default
-
-
-def _is_xau(symbol: str) -> bool:
-    s = (symbol or "").upper()
-    return "XAU" in s or "GOLD" in s
-
-
-def _ema(values: list[float], period: int) -> list[float]:
-    if period <= 1 or len(values) == 0:
-        return values[:]
-    k = 2.0 / (period + 1.0)
-    out = [values[0]]
-    for x in values[1:]:
-        prev = out[-1]
-        out.append(prev + k * (x - prev))
-    return out
-
-
-def _rsi(values: list[float], period: int = 14) -> list[float]:
-    if len(values) < period + 1:
-        return [50.0] * len(values)
-    gains: list[float] = []
-    losses: list[float] = []
-    for i in range(1, len(values)):
-        delta = values[i] - values[i - 1]
-        gains.append(max(delta, 0.0))
-        losses.append(max(-delta, 0.0))
-    avg_gain = _ema(gains, period)
-    avg_loss = _ema(losses, period)
-    rsi: list[float] = []
-    for gain_avg, loss_avg in zip(avg_gain, avg_loss, strict=False):
-        if loss_avg == 0:
-            rsi.append(100.0)
-        else:
-            rs = gain_avg / loss_avg
-            rsi.append(100.0 - (100.0 / (1.0 + rs)))
-    pad = max(0, len(values) - len(rsi))
-    return [50.0] * pad + rsi
-
-
-def _tr(prev_close: float, high: float, low: float) -> float:
-    return max(high - low, abs(high - prev_close), abs(low - prev_close))
-
-
-def _atr(
-    highs: list[float], lows: list[float], closes: list[float], period: int = 14
-) -> list[float]:
-    if len(closes) == 0:
-        return []
-    trs: list[float] = [0.0]
-    for i in range(1, len(closes)):
-        trs.append(_tr(closes[i - 1], highs[i], lows[i]))
-    return _ema(trs, period)
-
-
-@app.get("/inspect/momentum")
-def inspect_momentum(symbol: str, tf: str = Query("M15")):
-    ok, payload = get_rates(symbol, tf, 300)
-    if not ok:
-        return {"ok": False, "note": payload}
-
-    rates = payload["rates"]
-    if rates is None or len(rates) < 50:
-        return {"ok": False, "note": "not enough data", "len": 0}
-
-    closes = np.array([r["close"] for r in rates], dtype=float)
-    price = float(closes[-1])
-
-    def ema(arr, n):
-        k = 2 / (n + 1)
-        out = [arr[0]]
-        for x in arr[1:]:
-            out.append(out[-1] + k * (x - out[-1]))
-        return np.array(out)
-
-    def rsi(arr, n=14):
-        deltas = np.diff(arr)
-        up = np.where(deltas > 0, deltas, 0.0)
-        dn = np.where(deltas < 0, -deltas, 0.0)
-        ru = ema(up, n)
-        rd = ema(dn, n)
-        rs = np.divide(ru, rd, out=np.zeros_like(ru), where=rd != 0)
-        r = 100 - (100 / (1 + rs))
-        r = np.concatenate([[50.0], r])
-        return r
-
-    ema_fast = ema(closes, int(os.getenv("MOMENTUM_FX_EMA_FAST", "50")))
-    ema_slow = ema(closes, int(os.getenv("MOMENTUM_FX_EMA_SLOW", "200")))
-    rsi14 = rsi(closes, int(os.getenv("MOMENTUM_FX_RSI_PERIOD", "14")))
-
-    debug = {
-        "len": len(rates),
-        "price": price,
-        "ema_fast_last": float(ema_fast[-1]),
-        "ema_slow_last": float(ema_slow[-1]),
-        "rsi_last": float(rsi14[-1]),
-        "tf": tf,
-    }
-    return {"ok": True, "debug": debug}
+    return {"ok": True, "status": "running"}

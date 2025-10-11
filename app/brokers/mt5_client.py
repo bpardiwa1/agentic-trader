@@ -1,350 +1,372 @@
-# --- history warmup helpers ---
-from __future__ import annotations
-import datetime as dt
-
-import MetaTrader5 as mt5
-from typing import Any, Optional
-
-from .. import config
-
-_TF_MAP = {
-    "M1": mt5.TIMEFRAME_M1,
-    "M5": mt5.TIMEFRAME_M5,
-    "M15": mt5.TIMEFRAME_M15,
-    "M30": mt5.TIMEFRAME_M30,
-    "H1": mt5.TIMEFRAME_H1,
-    "H4": mt5.TIMEFRAME_H4,
-    "D1": mt5.TIMEFRAME_D1,
-}
-
-
-def _tf_to_mt5(tf: str):
-    return _TF_MAP.get(tf.upper(), mt5.TIMEFRAME_M15)
-
-
-def warmup_history(symbol: str, tf: str = "M15", bars: int = 500) -> dict:
-    """
-    Ensure MT5 has at least `bars` candles for (symbol, tf).
-    Selects symbol, requests history, retries copy if needed.
-    """
-    if not mt5.symbol_select(symbol, True):
-        return {"ok": False, "note": f"symbol_select failed for {symbol}"}
-
-    timeframe = _tf_to_mt5(tf)
-    # First attempt
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
-    got = 0 if rates is None else len(rates)
-    if got >= min(100, bars):  # enough to start
-        return {
-            "ok": True,
-            "symbol": symbol,
-            "tf": tf,
-            "bars": got,
-            "note": "ok_cached",
-        }
-
-    # Ask MT5 to load roughly the needed history window
-    minutes = {
-        "M1": 1,
-        "M5": 5,
-        "M15": 15,
-        "M30": 30,
-        "H1": 60,
-        "H4": 240,
-        "D1": 1440,
-    }.get(tf.upper(), 15)
-    lookback_min = int(bars * minutes * 1.5)  # 50% buffer
-    end = dt.datetime.now()
-    start = end - dt.timedelta(minutes=lookback_min)
-    mt5.history_select(start, end)
-
-    # Retry a couple of times
-    for _ in range(3):
-        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
-        got = 0 if rates is None else len(rates)
-        if got >= min(100, bars):
-            return {
-                "ok": True,
-                "symbol": symbol,
-                "tf": tf,
-                "bars": got,
-                "note": "ok_loaded",
-            }
-    return {
-        "ok": False,
-        "symbol": symbol,
-        "tf": tf,
-        "bars": got,
-        "note": "insufficient_history",
-    }
-
-
-def _ensure_init():
-    if not mt5.initialize(path=getattr(config, "MT5_PATH", None)):
-        return False, mt5.last_error()
-    # Best-effort login; ignore if already logged in
-    login = getattr(config, "MT5_LOGIN", None)
-    pwd = getattr(config, "MT5_PASSWORD", None)
-    srv = getattr(config, "MT5_SERVER", None)
-    if login and pwd and srv:
-        try:
-            mt5.login(int(login), password=pwd, server=srv)
-        except Exception:
-            pass
-    return True, None
-
-
-def _symbol_to_dict(i):
-    """Safely serialize SymbolInfo."""
-    if i is None:
-        return None
-
-    def g(name, default=None):
-        return getattr(i, name, default)
-
-    return {
-        "name": g("name"),
-        "path": g("path"),
-        "visible": g("visible"),
-        "select": g("select"),
-        "digits": g("digits"),
-        "point": g("point"),
-        "trade_mode": g("trade_mode"),
-        "trade_stops_level": g("trade_stops_level"),
-        "volume_min": g("volume_min"),
-        "volume_step": g("volume_step"),
-        "volume_max": g("volume_max"),
-        "trade_tick_size": g("trade_tick_size", g("point")),
-        # Session-related flags often indicate if market is “openish”
-        "session_deals": g("session_deals", 0),
-        "session_buy_orders": g("session_buy_orders", 0),
-        "session_sell_orders": g("session_sell_orders", 0),
-    }
-
-
-def search_symbols(query: str):
-    ok, err = _ensure_init()
-    if not ok:
-        return {"ok": False, "error": str(err)}
-    try:
-        results = mt5.symbols_get(f"*{query}*") or []
-        return {
-            "ok": True,
-            "count": len(results),
-            "symbols": [_symbol_to_dict(s) for s in results],
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"symbols_get error: {e}"}
-
-
 # app/brokers/mt5_client.py
+from __future__ import annotations
+
+import logging
+import os
 import time
+from typing import Any
 
-import MetaTrader5 as mt5
+import MetaTrader5 as mt5  # type: ignore[import-untyped]
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------
+TRADE_CONTEXT_BUSY = 10016
+INVALID_STOPS = 10004
+TRADE_RETCODE_DONE = 10009
+
+DRY_RUN = os.getenv("DRY_RUN", "false").lower() in ("1", "true", "yes", "on")
+TEST_MODE = os.getenv("TEST_MODE", "false").lower() in ("1", "true", "yes", "on")
 
 
-def is_symbol_trading_now(symbol: str):
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+def _env_int(key: str, default: int) -> int:
+    try:
+        return int(os.getenv(key, str(default)))
+    except Exception:
+        return default
+
+
+def _env_float(key: str, default: float) -> float:
+    try:
+        return float(os.getenv(key, str(default)))
+    except Exception:
+        return default
+
+
+def _get_side(request: dict[str, Any]) -> str:
     """
-    Robust 'is open' check:
-    - visible/select + trade_mode allows trading
-    - fresh tick within N seconds
-    - optional order_check probe (no volume, should not hard-fail as 'market closed')
-    Returns a dict used by guards.
+    Normalize trade direction:
+    - LONG / BUY → BUY
+    - SHORT / SELL → SELL
     """
-    info = mt5.symbol_info(symbol)
-    if info is None:
-        return {
-            "ok": False,
-            "symbol": symbol,
-            "not_disabled": False,
-            "session_active_like": False,
-            "market_open_like": False,
-            "info": None,
-            "note": "symbol_info None",
-        }
+    s = str(request.get("side") or request.get("type") or "BUY").upper()
+    if "SELL" in s or "SHORT" in s:
+        return "SELL"
+    return "BUY"
 
-    # visible/select
-    vis_ok = bool(info.visible and info.select)
 
-    # trade_mode
-    tradable_mode = info.trade_mode in (
-        mt5.SYMBOL_TRADE_MODE_FULL,
-        mt5.SYMBOL_TRADE_MODE_LONGONLY,
-        mt5.SYMBOL_TRADE_MODE_SHORTONLY,
+def _comment_is_invalid_stops(comment: str | None) -> bool:
+    if not comment:
+        return False
+    c = comment.lower()
+    return "invalid stops" in c or "invalid sl" in c or "invalid tp" in c
+
+
+# ---------------------------------------------------------------------
+# Symbol utilities
+# ---------------------------------------------------------------------
+def _adjust_volume(symbol: str, vol: float) -> float:
+    info = getattr(mt5, "symbol_info", lambda _: None)(symbol)
+    if not info:
+        return round(vol, 2)
+    vmin = float(getattr(info, "volume_min", 0.01))
+    vmax = float(getattr(info, "volume_max", 100.0))
+    step = float(getattr(info, "volume_step", 0.01))
+    vol = max(vmin, min(vol, vmax))
+    steps = round(vol / step)
+    return round(steps * step, 2)
+
+
+def _ensure_market_price(symbol: str, side: str, current: float | None) -> float:
+    tick = getattr(mt5, "symbol_info_tick", lambda _: None)(symbol)
+    if not tick:
+        return float(current or 0.0)
+    return float(tick.ask if side == "BUY" else tick.bid)
+
+
+def _compute_sl_tp(
+    symbol: str, side: str, price: float, sl_pips: float, tp_pips: float
+) -> tuple[float, float]:
+    pip_mode = os.getenv("INDICES_PIP_MODE", "mt5_point").lower()
+    is_index = any(x in symbol.upper() for x in ("NAS100", "US30", "GER40", "SPX500"))
+    info = getattr(mt5, "symbol_info", lambda _: None)(symbol)
+    point = float(getattr(info, "point", 0.01)) if info else 0.01
+    mult = 1.0 if (pip_mode == "index_point" and is_index) else point
+
+    if side == "BUY":
+        sl, tp = price - sl_pips * mult, price + tp_pips * mult
+    else:
+        sl, tp = price + sl_pips * mult, price - tp_pips * mult
+
+    logger.info(
+        "[compute_sl_tp] %s %s mode=%s mult=%.5f -> SL=%.5f TP=%.5f",
+        symbol,
+        side,
+        "index_point" if (is_index and pip_mode == "index_point") else "mt5_point",
+        mult,
+        sl,
+        tp,
+    )
+    return sl, tp
+
+
+def _ensure_min_stops(
+    symbol: str, side: str, price: float, sl: float, tp: float
+) -> tuple[float, float]:
+    info = getattr(mt5, "symbol_info", lambda _: None)(symbol)
+    if not info:
+        return sl, tp
+    min_stop = int(getattr(info, "trade_stops_level", 0))
+    if min_stop <= 0:
+        min_stop = _env_int("MT5_MIN_STOP_POINTS", 300)
+    pt = float(getattr(info, "point", 0.01))
+    dist = float(min_stop) * pt
+
+    if side == "BUY":
+        if price - sl < dist:
+            sl = price - dist
+        if tp - price < dist:
+            tp = price + dist
+    else:
+        if sl - price < dist:
+            sl = price + dist
+        if price - tp < dist:
+            tp = price - dist
+    return sl, tp
+
+
+def _dump_symbol_info(symbol: str) -> None:
+    info = getattr(mt5, "symbol_info", lambda _: None)(symbol)
+    if not info:
+        logger.info("[symbol_info] %s -> <none>", symbol)
+        return
+    logger.info(
+        "[symbol_info] %s point=%.5f stops_level=%s freeze_level=%s digits=%s exec_mode=%s",
+        symbol,
+        float(getattr(info, "point", 0.0)),
+        getattr(info, "trade_stops_level", None),
+        getattr(info, "freeze_level", None),
+        getattr(info, "digits", None),
+        getattr(info, "trade_exemode", None),
     )
 
-    # fresh tick
-    tick = mt5.symbol_info_tick(symbol)
-    now = time.time()
-    fresh_tick = bool(tick and getattr(tick, "time", 0) and (now - tick.time) < 180)
 
-    # optional lightweight probe: order_check with zero volume
-    probe_ok = True
-    try:
-        req = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "type": mt5.ORDER_TYPE_BUY,
-            "volume": 0.0,  # zero volume probe; broker should not accept, but we only care retcode
-            "deviation": 50,
+# ---------------------------------------------------------------------
+# SL/TP attach helper
+# ---------------------------------------------------------------------
+def _attach_sltp(
+    symbol: str, ticket: int, sl: float, tp: float, retries: int, delay: float
+) -> dict:
+    action_sltp = getattr(mt5, "TRADE_ACTION_SLTP", 0x67)
+    modify_req = {
+        "action": action_sltp,
+        "symbol": symbol,
+        "position": int(ticket),
+        "sl": float(sl),
+        "tp": float(tp),
+        "comment": "attach_sltp",
+    }
+
+    for attempt in range(1, retries + 1):
+        try:
+            res = getattr(mt5, "order_send", lambda _: None)(modify_req)
+        except Exception as e:
+            logger.error("[SLTP] order_send exception (%s/%s): %s", attempt, retries, e)
+            time.sleep(delay)
+            continue
+
+        if not res:
+            logger.error("[SLTP] No response (attempt %s/%s)", attempt, retries)
+            time.sleep(delay)
+            continue
+
+        r = res._asdict()
+        rc, cm = r.get("retcode"), r.get("comment")
+
+        if rc == TRADE_RETCODE_DONE:
+            logger.info("[SLTP] Attached OK: ticket=%s sl=%.2f tp=%.2f", ticket, sl, tp)
+            return {"ok": True, "result": r}
+
+        if rc == TRADE_CONTEXT_BUSY:
+            logger.warning("[SLTP] busy (attempt %s/%s)", attempt, retries)
+            time.sleep(delay)
+            continue
+
+        if rc == INVALID_STOPS or _comment_is_invalid_stops(cm):
+            logger.warning("[SLTP] Invalid stops on modify: %s — stop retries", cm)
+            return {"ok": False, "result": r}
+
+        logger.error(
+            "[SLTP] Modify rejected: rc=%s cm=%s (attempt %s/%s)", rc, cm, attempt, retries
+        )
+        time.sleep(delay)
+
+    return {"ok": False, "error": "attach_sltp_failed"}
+
+
+# ---------------------------------------------------------------------
+# Main order path
+# ---------------------------------------------------------------------
+def place_order(request: dict[str, Any]) -> dict:
+    symbol = request.get("symbol")
+    if not symbol:
+        return {"ok": False, "error": "missing_symbol"}
+
+    # Resolve side
+    side = _get_side(request)
+    logger.info("[SIDE_RESOLVE] %s -> %s", symbol, side)
+
+    # Determine lot size dynamically from environment
+    sym_up = symbol.replace("-", "_").replace(".", "_").upper()
+    env_key = f"LOTS_{sym_up}"
+    vol = float(os.getenv(env_key, os.getenv("MT5_DEFAULT_LOTS", "0.01")))
+    request["volume"] = _adjust_volume(symbol, vol)
+    logger.info("[VOLUME] %s volume=%.2f (env key=%s)", symbol, request["volume"], env_key)
+
+    if DRY_RUN:
+        logger.info("[DRY_RUN] %s skipping order send", symbol)
+        return {"ok": True, "comment": "dry_run"}
+    if TEST_MODE:
+        return {"ok": True, "comment": "simulated", "ticket": 999999}
+
+    retries = _env_int("MT5_ATTACH_RETRIES", 5)
+    delay = _env_float("MT5_ATTACH_DELAY_SEC", 0.8)
+    widen_mult = _env_float("MT5_STOP_WIDEN_MULT", 2.0)
+    deviation = _env_int("MT5_DEVIATION", 80)
+    request["deviation"] = deviation
+
+    price = _ensure_market_price(symbol, side, request.get("price"))
+    request["price"] = price
+    sl_pips = float(request.get("sl_pips", 100.0))
+    tp_pips = float(request.get("tp_pips", 200.0))
+    sl, tp = _compute_sl_tp(symbol, side, price, sl_pips, tp_pips)
+    sl, tp = _ensure_min_stops(symbol, side, price, sl, tp)
+
+    info = getattr(mt5, "symbol_info", lambda _: None)(symbol)
+    _dump_symbol_info(symbol)
+    if not info:
+        return {"ok": False, "error": "no_symbol_info"}
+
+    # Fill mode detection
+    fill_mode_value = getattr(info, "fill_mode", None)
+    if fill_mode_value is None:
+        fill_mode = getattr(mt5, "ORDER_FILLING_IOC", 1)
+        logger.info("[FILL_MODE] %s fill_mode=<not available> -> using IOC", symbol)
+    else:
+        if fill_mode_value == 1:
+            fill_mode = getattr(mt5, "ORDER_FILLING_FOK", 0)
+        elif fill_mode_value == 2:
+            fill_mode = getattr(mt5, "ORDER_FILLING_IOC", 1)
+        elif fill_mode_value == 3:
+            fill_mode = getattr(mt5, "ORDER_FILLING_RETURN", 2)
+        else:
+            fill_mode = getattr(mt5, "ORDER_FILLING_IOC", 1)
+        logger.info("[FILL_MODE] %s fill_mode=%s", symbol, fill_mode_value)
+
+    # Market execution fallback
+    if getattr(info, "trade_exemode", 0) == 2:
+        logger.info("[MARKET_EXEC] %s exec_mode=2 -> placing naked then attach SL/TP", symbol)
+
+    # Build base trade request
+    trade_req = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": request["volume"],
+        "type": mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL,
+        "price": price,
+        "deviation": deviation,
+        "magic": 123456,
+        "comment": "AgenticTrader auto order",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": fill_mode,
+        "sl": sl,
+        "tp": tp,
+    }
+
+    last_result: Any = None
+
+    # Attempt order with SL/TP
+    for attempt in range(1, retries + 1):
+        try:
+            res = getattr(mt5, "order_send", lambda _: None)(trade_req)
+        except Exception as e:
+            logger.error("order_send exception (%s/%s): %s", attempt, retries, e)
+            time.sleep(delay)
+            continue
+
+        if not res:
+            logger.error("No response (attempt %s/%s)", attempt, retries)
+            time.sleep(delay)
+            continue
+
+        r = res._asdict()
+        rc, cm = r.get("retcode"), r.get("comment")
+
+        if rc == TRADE_RETCODE_DONE:
+            logger.info("Order executed with SL/TP: %s", r.get("order"))
+            return {"ok": True, "retcode": rc, "comment": cm, "result": r}
+
+        if rc == TRADE_CONTEXT_BUSY:
+            logger.warning("Busy retcode 10016 attempt %s/%s", attempt, retries)
+            time.sleep(delay)
+            continue
+
+        if rc == INVALID_STOPS or _comment_is_invalid_stops(cm):
+            logger.warning("Invalid stops rc=%s cm=%s — widening", rc, cm)
+            sl_pips *= widen_mult
+            tp_pips *= widen_mult
+            sl, tp = _compute_sl_tp(symbol, side, price, sl_pips, tp_pips)
+            sl, tp = _ensure_min_stops(symbol, side, price, sl, tp)
+            trade_req["sl"], trade_req["tp"] = sl, tp
+            time.sleep(delay)
+            continue
+
+        logger.error("Order rejected: rc=%s cm=%s (attempt %s/%s)", rc, cm, attempt, retries)
+        last_result = r
+        time.sleep(delay)
+
+    # Fallback naked order + attach SL/TP
+    logger.warning("[FALLBACK] placing %s naked then attach SL/TP", symbol)
+    naked_req = dict(trade_req)
+    naked_req.pop("sl", None)
+    naked_req.pop("tp", None)
+
+    order_ticket: int | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            res = getattr(mt5, "order_send", lambda _: None)(naked_req)
+        except Exception as e:
+            logger.error("[NAKED] exception (%s/%s): %s", attempt, retries, e)
+            time.sleep(delay)
+            continue
+
+        if not res:
+            logger.error("[NAKED] no response (attempt %s/%s)", attempt, retries)
+            time.sleep(delay)
+            continue
+
+        r = res._asdict()
+        rc, cm = r.get("retcode"), r.get("comment")
+
+        if rc == TRADE_RETCODE_DONE:
+            order_ticket = int(r.get("order") or 0)
+            logger.info("Order executed WITHOUT SL/TP: ticket=%s", order_ticket)
+            break
+
+        logger.error("[NAKED] rejected rc=%s cm=%s (attempt %s/%s)", rc, cm, attempt, retries)
+        time.sleep(delay)
+
+    if not order_ticket:
+        logger.warning("[%s] order failed: %s", symbol, last_result)
+        return {"ok": False, "result": last_result or {"error": "failed_naked_order"}}
+
+    attach = _attach_sltp(symbol, order_ticket, float(sl), float(tp), retries=retries, delay=delay)
+    if not attach.get("ok"):
+        return {
+            "ok": True,
+            "ticket": order_ticket,
+            "warning": "sltp_attach_failed",
+            "attach": attach,
         }
-        chk = mt5.order_check(req)
-        # If broker strictly rejects zero-volume, ignore; but if it says "market closed", treat as closed
-        comment = (getattr(chk, "comment", "") or "").lower()
-        if "market closed" in comment or "trading prohibited" in comment:
-            probe_ok = False
-    except Exception:
-        # if order_check not available or raises, ignore
-        pass
-
-    market_open_like = vis_ok and tradable_mode and (fresh_tick or probe_ok)
 
     return {
         "ok": True,
-        "symbol": symbol,
-        "not_disabled": vis_ok and tradable_mode,
-        "session_active_like": market_open_like,  # keep same fields for callers
-        "market_open_like": market_open_like,
-        "info": {
-            "name": info.name,
-            "path": info.path,
-            "visible": bool(info.visible),
-            "select": bool(info.select),
-            "digits": info.digits,
-            "trade_mode": int(info.trade_mode),
-            "trade_stops_level": int(info.trade_stops_level),
-            "volume_min": float(info.volume_min),
-            "volume_step": float(info.volume_step),
-            "volume_max": float(info.volume_max),
-        },
-        "note": f"fresh_tick={fresh_tick} tradable_mode={tradable_mode} probe_ok={probe_ok}",
+        "ticket": order_ticket,
+        "retcode": TRADE_RETCODE_DONE,
+        "comment": "attached_sltp",
     }
-
-
-def symbol_info_dict(symbol: str):
-    ok, err = _ensure_init()
-    if not ok:
-        return {"ok": False, "error": str(err)}
-    mt5.symbol_select(symbol, True)
-    info = mt5.symbol_info(symbol)
-    if not info:
-        return {"ok": False, "error": "symbol not found"}
-    return {"ok": True, "info": _symbol_to_dict(info)}
-
-
-# ---------------- Backward-compatibility shims ----------------
-
-
-def init_and_login():
-    """Legacy alias used by main.py"""
-    return _ensure_init()
-
-
-def list_symbols(pattern: str = "*"):
-    """Legacy: returns a list of basic symbol dicts."""
-    ok, err = _ensure_init()
-    if not ok:
-        return {"ok": False, "error": str(err)}
-    try:
-        syms = mt5.symbols_get(pattern) or []
-        return {
-            "ok": True,
-            "symbols": [
-                {
-                    "name": s.name,
-                    "path": getattr(s, "path", ""),
-                    "digits": getattr(s, "digits", None),
-                    "point": getattr(s, "point", None),
-                }
-                for s in syms
-            ],
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"symbols_get error: {e}"}
-
-
-def market_symbol_info(symbol: str):
-    """Legacy: minimal info used around the codebase."""
-    ok, err = _ensure_init()
-    if not ok:
-        return {"ok": False, "error": str(err)}
-    try:
-        mt5.symbol_select(symbol, True)
-        info = mt5.symbol_info(symbol)
-        if not info:
-            return {"ok": False, "error": "symbol not found"}
-        return {
-            "ok": True,
-            "info": {
-                "name": info.name,
-                "digits": getattr(info, "digits", None),
-                "point": getattr(info, "point", None),
-                "trade_stops_level": getattr(info, "trade_stops_level", 0),
-                "volume_min": getattr(info, "volume_min", 0.01),
-                "volume_step": getattr(info, "volume_step", 0.01),
-                "volume_max": getattr(info, "volume_max", None),
-                "trade_tick_size": getattr(
-                    info, "trade_tick_size", getattr(info, "point", None)
-                ),
-            },
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"symbol_info error: {e}"}
-
-
-# app/brokers/mt5_client.py
-
-
-def _type_desc(pos_type: int) -> str:
-    # MT5: 0 = BUY, 1 = SELL
-    try:
-        return "BUY" if pos_type == getattr(mt5, "POSITION_TYPE_BUY", 0) else "SELL"
-    except Exception:
-        return "BUY" if pos_type == 0 else "SELL"
-
-def get_positions(symbol: Optional[str] = None) -> list[dict[str, Any]]:
-    """
-    Return broker positions as a list of normalized dicts with a stable schema.
-    Keys we rely on elsewhere: ticket, symbol, volume, type_desc, side,
-    price_open, price_current, sl, tp, profit.
-    """
-    try:
-        raw = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
-    except Exception:
-        raw = None
-
-    out: list[dict[str, Any]] = []
-    if not raw:
-        return out
-
-    for p in raw:
-        try:
-            pos = {
-                "ticket": getattr(p, "ticket", None),
-                "symbol": getattr(p, "symbol", None),
-                "volume": float(getattr(p, "volume", 0.0) or 0.0),
-                "type": getattr(p, "type", None),
-                "type_desc": _type_desc(getattr(p, "type", 0)),
-                "side": _type_desc(getattr(p, "type", 0)),  # alias used by other modules
-                "price_open": float(getattr(p, "price_open", 0.0) or 0.0),
-                "price_current": float(getattr(p, "price_current", 0.0) or 0.0),
-                "sl": float(getattr(p, "sl", 0.0) or 0.0),
-                "tp": float(getattr(p, "tp", 0.0) or 0.0),
-                "profit": float(getattr(p, "profit", 0.0) or 0.0),
-                "swap": float(getattr(p, "swap", 0.0) or 0.0),
-                "commission": float(getattr(p, "commission", 0.0) or 0.0),
-                "time": getattr(p, "time", None),
-            }
-            out.append(pos)
-        except Exception:
-            # Defensive: skip malformed entries
-            continue
-
-    return out
-
-def get_account_info() -> dict:
-    """Return account info (equity, balance, currency, margin, etc) as dict."""
-    info = mt5.account_info()
-    if info is None:
-        return {}
-    return info._asdict()

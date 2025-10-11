@@ -1,0 +1,28 @@
+# Add NSSM to PATH for this session
+$env:Path = "C:\nssm\nssm-2.24\win64;" + $env:Path
+
+# Verify
+Write-Host "PATH is now: $env:Path"
+
+# Now you can just call nssm directly
+nssm.exe version
+
+mkdir C:\agentic-trader\logs 2>nul
+
+REM -------- API logs --------
+nssm set AgenticTraderAPI AppStdout C:\agentic-trader\logs\api.out.log
+nssm set AgenticTraderAPI AppStderr C:\agentic-trader\logs\api.err.log
+
+REM rotate logs online (no restart needed), keep files manageable
+nssm set AgenticTraderAPI AppRotateFiles   1
+nssm set AgenticTraderAPI AppRotateOnline  1
+nssm set AgenticTraderAPI AppRotateBytes   10485760   REM 10 MB
+nssm set AgenticTraderAPI AppRotateSeconds 86400       REM 1 day
+
+REM -------- Auto logs --------
+nssm set AgenticTraderAuto AppStdout C:\agentic-trader\logs\auto.out.log
+nssm set AgenticTraderAuto AppStderr C:\agentic-trader\logs\auto.err.log
+nssm set AgenticTraderAuto AppRotateFiles   1
+nssm set AgenticTraderAuto AppRotateOnline  1
+nssm set AgenticTraderAuto AppRotateBytes   10485760
+nssm set AgenticTraderAuto AppRotateSeconds 86400

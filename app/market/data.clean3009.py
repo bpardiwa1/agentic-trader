@@ -19,20 +19,13 @@ except Exception:
     mt5c = None  # type: ignore
     _HAS_MT5C = False
 
-# Cast MT5 as Any so Pylance stops complaining about dynamic attributes
+# Treat MT5 as dynamic for Pylance (silences attr warnings like .initialize, .symbol_info, etc.)
 mt5: Any = _mt5
 
 # -----------------------------
 # Constants
 # -----------------------------
-BB_PERIOD = 20
-RSI_UP_THRESHOLD = 55
-RSI_DOWN_THRESHOLD = 45
-
-# -----------------------------
-# Timeframe mapping
-# -----------------------------
-_TF_MAP = {
+TF_MAP = {
     "M1": mt5.TIMEFRAME_M1,
     "M5": mt5.TIMEFRAME_M5,
     "M15": mt5.TIMEFRAME_M15,
@@ -42,70 +35,61 @@ _TF_MAP = {
     "D1": mt5.TIMEFRAME_D1,
 }
 
-
-def _tf_to_mt5(tf: str) -> int:
-    return _TF_MAP.get((tf or "M15").upper(), mt5.TIMEFRAME_M15)
+COOLDOWN_MINUTES = 5
+BOLL_PERIOD = 20
+RSI_UP = 55
+RSI_DOWN = 45
 
 
 # -----------------------------
 # Init / Symbol resolution
 # -----------------------------
 def _ensure_initialized() -> None:
-    """Make sure MT5 is initialized/logged in."""
     try:
         if _HAS_MT5C and mt5c is not None and hasattr(mt5c, "init_and_login"):
             mt5c.init_and_login()
     except Exception:
         pass
     with contextlib.suppress(Exception):
-        mt5.initialize()  # if already initialized, this is a no-op
+        mt5.initialize()
+        mt5.initialize()
 
 
 def _env_alias(symbol: str) -> str:
-    """Allow env aliases: SYMBOL_ALIAS_EURUSD_ECNc=EURUSD (non-alnum -> '_' in key)."""
+    """Resolve symbol alias from env (SYMBOL_ALIAS_EURUSD_ECNC=EURUSD)."""
     key = "SYMBOL_ALIAS_" + re.sub(r"[^A-Z0-9]+", "_", symbol.upper())
     return (os.getenv(key) or symbol).strip()
 
 
 def _resolve_symbol(symbol: str) -> str:
     """
-    Resolution order:
-      1) env alias
-      2) exact symbol exists
-      3) drop suffix after '-' (EURUSD-ECNc -> EURUSD)
-      4) search via mt5_client (if available)
+    Try to resolve to a valid MT5 symbol:
+      1. Env alias
+      2. Exact match
+      3. Drop suffix after '-' (EURUSD-ECNc → EURUSD)
+      4. Search via mt5_client if available
     """
-
-    def _extract_candidates(hits) -> list[str]:
-        cands: list[str] = []
-        if isinstance(hits, list):
-            for h in hits:
-                if isinstance(h, str):
-                    cands.append(h)
-                elif isinstance(h, dict):
-                    name = h.get("name") or h.get("symbol") or h.get("Symbol")
-                    if isinstance(name, str):
-                        cands.append(name)
-        return cands
-
     alias = _env_alias(symbol)
-    try:
-        if mt5.symbol_info(alias) is not None:
-            return alias
-    except Exception:
-        pass
+
+    if mt5.symbol_info(alias) is not None:
+        return alias
 
     base = symbol.split("-", 1)[0]
-    try:
-        if mt5.symbol_info(base) is not None:
-            return base
-    except Exception:
-        pass
+    if mt5.symbol_info(base) is not None:
+        return base
 
     if _HAS_MT5C and mt5c is not None and hasattr(mt5c, "search_symbols"):
         try:
             hits = mt5c.search_symbols(base)
-            cands = _extract_candidates(hits)
+            cands: list[str] = []
+            if isinstance(hits, list):
+                for h in hits:
+                    if isinstance(h, str):
+                        cands.append(h)
+                    elif isinstance(h, dict):
+                        name = h.get("name") or h.get("symbol") or h.get("Symbol")
+                        if isinstance(name, str):
+                            cands.append(name)
             for cand in cands:
                 if cand.upper().startswith(base.upper()):
                     return cand
@@ -118,7 +102,7 @@ def _resolve_symbol(symbol: str) -> str:
 
 
 def _select_symbol(sym: str) -> bool:
-    """Try to select symbol, nudging history once if needed."""
+    """Try to select symbol in MT5, nudging history once if needed."""
     if mt5.symbol_select(sym, True):
         return True
     try:
@@ -133,8 +117,12 @@ def _select_symbol(sym: str) -> bool:
 # -----------------------------
 # Public data fetchers
 # -----------------------------
+def _tf_to_mt5(tf: str) -> int:
+    return TF_MAP.get((tf or "M15").upper(), mt5.TIMEFRAME_M15)
+
+
 def get_rates(symbol: str, tf: str = "M15", n: int = 300) -> pd.DataFrame:
-    """Return last n bars as DataFrame. Columns: time, open, high, low, close, ..."""
+    """Fetch OHLCV rates for (symbol, timeframe). Returns DataFrame or empty DataFrame."""
     _ensure_initialized()
     resolved = _resolve_symbol(symbol)
     if not _select_symbol(resolved):
@@ -143,13 +131,13 @@ def get_rates(symbol: str, tf: str = "M15", n: int = 300) -> pd.DataFrame:
     timeframe = _tf_to_mt5(tf)
     rates = mt5.copy_rates_from_pos(resolved, timeframe, 0, n)
 
-    if rates is None or len(rates) == 0:
+    if not rates or len(rates) == 0:
         end = dt.datetime.now()
         start = end - dt.timedelta(days=10)
         mt5.history_select(start, end)
         rates = mt5.copy_rates_from_pos(resolved, timeframe, 0, n)
 
-    if rates is None or len(rates) == 0:
+    if not rates or len(rates) == 0:
         return pd.DataFrame()
 
     df = pd.DataFrame(rates)
@@ -161,30 +149,10 @@ def get_rates(symbol: str, tf: str = "M15", n: int = 300) -> pd.DataFrame:
     return df
 
 
-def get_rates_payload(symbol: str, tf: str = "M15", n: int = 300) -> tuple[bool, dict[str, Any]]:
-    """Tuple-returning variant: (ok, payload)."""
-    _ensure_initialized()
-    resolved = _resolve_symbol(symbol)
-    if not _select_symbol(resolved):
-        return False, {"error": "symbol_select failed", "requested": symbol, "resolved": resolved}
-
-    timeframe = _tf_to_mt5(tf)
-    rates = mt5.copy_rates_from_pos(resolved, timeframe, 0, n)
-
-    if rates is None or len(rates) == 0:
-        end = dt.datetime.now()
-        start = end - dt.timedelta(days=10)
-        mt5.history_select(start, end)
-        rates = mt5.copy_rates_from_pos(resolved, timeframe, 0, n)
-
-    if rates is None or len(rates) == 0:
-        return False, {"error": "no data", "requested": symbol, "resolved": resolved, "tf": tf}
-
-    df = pd.DataFrame(rates)
-    if "time" in df.columns:
-        df["time"] = pd.to_datetime(df["time"], unit="s")
-
-    return True, {"symbol": resolved, "requested": symbol, "tf": tf, "rates": rates, "df": df}
+def get_rates_df(symbol: str, tf: str = "M15", n: int = 300) -> pd.DataFrame | None:
+    """Wrapper returning DataFrame or None."""
+    df = get_rates(symbol, tf, n)
+    return None if df.empty else df
 
 
 # -----------------------------
@@ -246,7 +214,10 @@ def _atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 
 # Public: compute_context
 # -----------------------------
 def compute_context(symbol: str, tf: str = "H1", count: int = 300) -> dict[str, Any]:
-    """Return compact summary: price, EMA, RSI, ATR%, Bollinger width %, regime."""
+    """
+    Compute compact market summary:
+      price, EMA50/200, RSI14, ATR%, Bollinger width %, regime.
+    """
     df = get_rates(symbol, tf, count)
     if df is None or df.empty:
         return {"symbol": symbol, "timeframe": tf, "ok": False, "error": "no_data"}
@@ -266,11 +237,11 @@ def compute_context(symbol: str, tf: str = "H1", count: int = 300) -> dict[str, 
     rlast = float(rsi14[-1])
     alast = float(atr14[-1])
 
-    # Bollinger width %
-    if len(closes) >= BB_PERIOD:
+    # Bollinger bands width (%)
+    if len(closes) >= BOLL_PERIOD:
         roll = pd.Series(closes)
-        m20 = roll.rolling(BB_PERIOD).mean().to_numpy()
-        s20 = roll.rolling(BB_PERIOD).std(ddof=0).to_numpy()
+        m20 = roll.rolling(BOLL_PERIOD).mean().to_numpy()
+        s20 = roll.rolling(BOLL_PERIOD).std(ddof=0).to_numpy()
         upper = m20[-1] + 2.0 * s20[-1]
         lower = m20[-1] - 2.0 * s20[-1]
         bb_width_pct = float((upper - lower) / price) if price else float("nan")
@@ -279,16 +250,15 @@ def compute_context(symbol: str, tf: str = "H1", count: int = 300) -> dict[str, 
 
     atr_pct = float(alast / price) if price else float("nan")
 
-    # Simple regime tag
-    if e50 > e200 and rlast > RSI_UP_THRESHOLD:
+    # Simple regime
+    if e50 > e200 and rlast > RSI_UP:
         regime, notes = "TRENDING_UP", "EMA50>EMA200 and RSI>55"
-    elif e50 < e200 and rlast < RSI_DOWN_THRESHOLD:
+    elif e50 < e200 and rlast < RSI_DOWN:
         regime, notes = "TRENDING_DOWN", "EMA50<EMA200 and RSI<45"
     else:
         regime, notes = "RANGE/MIXED", "mixed EMA/RSI state"
 
     resolved = df.attrs.get("symbol", symbol)
-
     return {
         "ok": True,
         "symbol": resolved,
@@ -303,14 +273,3 @@ def compute_context(symbol: str, tf: str = "H1", count: int = 300) -> dict[str, 
         "regime": regime,
         "notes": notes,
     }
-
-
-# -----------------------------
-# Compatibility wrapper
-# -----------------------------
-def get_rates_df(symbol: str, tf: str = "M15", n: int = 300) -> pd.DataFrame | None:
-    """Wrapper for callers expecting DataFrame or None."""
-    df = get_rates(symbol, tf, n)
-    if df is None or df.empty:
-        return None
-    return df

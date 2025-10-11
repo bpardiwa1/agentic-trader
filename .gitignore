@@ -19,9 +19,10 @@ app/journal/
 .env          # <-- ignore real secrets
 .env.*        # ignore other env variants
 !.env.template  # <-- keep template in repo
+app/env/.merged
 
 # GitHub Actions cache
 .github/workflows/*.yml~
 
 #Backup files
-*.bkp*
+*bkp*

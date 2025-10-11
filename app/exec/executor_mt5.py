@@ -1,214 +1,189 @@
 # app/exec/executor_mt5.py
 from __future__ import annotations
 
-import math
-from typing import Any, Optional
+import os
+from typing import Any, cast
 
-import MetaTrader5 as mt5
+import MetaTrader5 as _mt5
+
+# Type-hint MT5 as Any so Pylance allows dynamic attrs (order_send, symbol_info_tick, etc.)
+mt5: Any = cast(Any, _mt5)
+
+# Tunables / "magic numbers" expressed as constants
+MAX_SYMBOL_SELECT_TRIES = 5
+DEFAULT_DEVIATION = 50
+DEFAULT_FILLING = 1  # ORDER_FILLING_IOC
+ACTION_DEAL = 1  # TRADE_ACTION_DEAL
+ORDER_BUY = 0  # ORDER_TYPE_BUY
+ORDER_SELL = 1  # ORDER_TYPE_SELL
+RETCODE_DONE = 10009  # TRADE_RETCODE_DONE
+
+MIN_DIGITS_FOR_FIVE_DIGIT_FX = 5  # Used for pip size guess
+MIN_DIGITS_FOR_THREE_DIGIT_FX = 3  # Used for pip size guess
 
 
-# ---------- symbol helpers ----------------------------------------------------
+def _env_float(name: str, default: float) -> float:
+    try:
+        raw = (os.getenv(name) or str(default)).split("#", 1)[0].strip()
+        return float(raw)
+    except Exception:
+        return default
 
-def _syminfo(symbol: str):
-    return mt5.symbol_info(symbol)
 
-def _digits(symbol: str) -> int:
-    si = _syminfo(symbol)
-    return int(si.digits) if si else 5
+def _ensure_symbol_visible(symbol: str) -> bool:
+    """Make sure the symbol is selected/visible before trading."""
+    info = mt5.symbol_info(symbol)
+    if info and getattr(info, "visible", True):
+        return True
 
-def _point(symbol: str) -> float:
-    si = _syminfo(symbol)
-    return float(si.point) if si else 0.00001
+    return any(mt5.symbol_select(symbol, True) for _ in range(MAX_SYMBOL_SELECT_TRIES))
 
-def _tick_size(symbol: str) -> float:
-    # smallest price increment
-    si = _syminfo(symbol)
-    ts = getattr(si, "trade_tick_size", None)
-    if ts is None or ts <= 0:
-        # fall back to "point"
-        ts = _point(symbol)
-    return float(ts) if ts else 0.00001
 
-def _stop_level_points(symbol: str) -> float:
-    # broker min distance from current price to SL/TP, in POINTS
-    si = _syminfo(symbol)
-    return float(getattr(si, "trade_stops_level", 0.0))  # already in "points"
-    # Note: if zero, broker doesn’t impose a min distance
-
-def _pip_size(symbol: str) -> float:
+def _pip_size_guess(symbol: str) -> float:
     """
-    Our *strategy pips* -> price mapping.
-    - Most FX pairs with 5 digits -> 0.0001 per pip
-    - XAUUSD -> 0.1 per pip
-    - Fallback: 10 * point
+    Best-effort pip size (price units per pip).
+    - XAUUSD ~ $0.10 per pip (most brokers quote to 0.01)
+    - XXXJPY ~ 0.01
+    - 5-digit FX ~ 0.00010
+    Fallback: 10 * point if digits >= 3, else point.
     """
-    s = (symbol or "").upper()
+    s = symbol.upper()
     if "XAU" in s:
-        return 0.1
-    # Generic FX
-    if _digits(symbol) >= 5:
-        return 0.0001
-    # Fallback: 10 * point (e.g. 3 digits)
-    return _point(symbol) * 10.0
+        return 0.10
+    if s.endswith("JPY") or "JPY" in s:
+        return 0.01
 
+    info = mt5.symbol_info(symbol)
+    try:
+        point = float(getattr(info, "point", 0.0)) if info else 0.0
+        digits = int(getattr(info, "digits", 0)) if info else 0
+    except Exception:
+        point = 0.0
+        digits = 0
 
-def _price_from_pips(symbol: str, entry: float, pips: float, side: str, is_sl: bool) -> float:
-    """
-    Convert pips to absolute price from the entry.
-    - For LONG:  SL below, TP above
-    - For SHORT: SL above, TP below
-    """
-    pip = _pip_size(symbol)
-    delta = pip * float(pips)
-    if side == "LONG":
-        return entry - delta if is_sl else entry + delta
-    else:  # SHORT
-        return entry + delta if is_sl else entry - delta
+    if digits >= MIN_DIGITS_FOR_FIVE_DIGIT_FX:
+        # 5-digit FX (e.g., EURUSD to 1e-5): 1 pip = 0.00010
+        return 10.0 * point or 0.00010
+    if digits >= MIN_DIGITS_FOR_THREE_DIGIT_FX:
+        # 3-digit (JPY-style): 1 pip = 0.01
+        return 10.0 * point or 0.010
+    # Conservative fallback if broker metadata missing
+    return point or 0.00010
 
-
-def _round_to_tick(symbol: str, price: float) -> float:
-    ts = _tick_size(symbol)
-    if ts <= 0:
-        return price
-    # round to nearest trade tick
-    return round(price / ts) * ts
-
-
-def _ensure_min_stop_distance(symbol: str, side: str, entry: float, sl: float, tp: float) -> tuple[float, float]:
-    """
-    Make sure SL/TP respect broker 'trade_stops_level' in *points*.
-    Convert points -> price distance using 'point'.
-    """
-    stop_level_pts = _stop_level_points(symbol)
-    if stop_level_pts <= 0:
-        return sl, tp  # no min distance
-
-    pt = _point(symbol)
-    min_dist_price = stop_level_pts * pt  # price distance
-
-    if side == "LONG":
-        # SL below entry, TP above entry
-        if (entry - sl) < min_dist_price:
-            sl = entry - min_dist_price
-        if (tp - entry) < min_dist_price:
-            tp = entry + min_dist_price
-    else:
-        # SHORT
-        if (sl - entry) < min_dist_price:
-            sl = entry + min_dist_price
-        if (entry - tp) < min_dist_price:
-            tp = entry - min_dist_price
-
-    # Round to tick
-    sl = _round_to_tick(symbol, sl)
-    tp = _round_to_tick(symbol, tp)
-    return sl, tp
-
-
-# ---------- public API --------------------------------------------------------
 
 def compute_sl_tp_prices(
     symbol: str,
-    side: str,
     entry: float,
-    sl_pips: float,
-    tp_pips: float,
-) -> dict[str, float]:
+    sl_pips: float | None,
+    tp_pips: float | None,
+    side: str,
+) -> tuple[float | None, float | None]:
     """
-    Convert *pips* to *prices*, round to tick, enforce min stop distance.
+    Convert SL/TP (in pips) to absolute prices based on entry and side.
+    Returns (sl_price, tp_price).
     """
-    side = side.upper()
-    if side not in ("LONG", "SHORT"):
-        raise ValueError(f"invalid side: {side}")
+    pip = _pip_size_guess(symbol)
+    is_long = (side or "").upper() == "LONG"
 
-    raw_sl = _price_from_pips(symbol, entry, sl_pips, side, is_sl=True)
-    raw_tp = _price_from_pips(symbol, entry, tp_pips, side, is_sl=False)
+    sl_price: float | None = None
+    tp_price: float | None = None
 
-    sl = _round_to_tick(symbol, raw_sl)
-    tp = _round_to_tick(symbol, raw_tp)
+    if sl_pips and sl_pips > 0:
+        sl_delta = sl_pips * pip
+        sl_price = entry - sl_delta if is_long else entry + sl_delta
 
-    sl, tp = _ensure_min_stop_distance(symbol, side, entry, sl, tp)
+    if tp_pips and tp_pips > 0:
+        tp_delta = tp_pips * pip
+        tp_price = entry + tp_delta if is_long else entry - tp_delta
 
-    return {
-        "entry": float(entry),
-        "sl": float(sl),
-        "tp": float(tp),
-        "pip_size": _pip_size(symbol),
-        "tick_size": _tick_size(symbol),
-        "stop_level_points": _stop_level_points(symbol),
-        "point": _point(symbol),
-    }
+    return sl_price, tp_price
+
+
+def _price_for_side(symbol: str, side: str) -> float | None:
+    tick = mt5.symbol_info_tick(symbol)
+    if not tick:
+        return None
+    return float(tick.ask) if (side or "").upper() == "LONG" else float(tick.bid)
+
+
+def _side_to_order_type(side: str) -> int:
+    return ORDER_BUY if (side or "").upper() == "LONG" else ORDER_SELL
 
 
 def place_market_order(
     symbol: str,
     side: str,
     lots: float,
-    sl_pips: float,
-    tp_pips: float,
+    sl_pips: float | None = None,
+    tp_pips: float | None = None,
     comment: str = "",
-    *,
-    entry_override: Optional[float] = None,
+    entry_override: float | None = None,
 ) -> dict[str, Any]:
     """
-    Place a market order and set SL/TP using pips -> price conversion.
-    If entry_override is None, we use best available (ask for LONG, bid for SHORT).
+    Place a market order with optional SL/TP in pips.
+    Returns an execution report-like dict (retcode, status, etc.).
     """
-    # Pull current ticks
-    tick = mt5.symbol_info_tick(symbol)
-    if not tick:
-        return {"status": "error", "error": "no_tick"}
+    # 1) Ensure tradable symbol
+    if not _ensure_symbol_visible(symbol):
+        return {
+            "status": "error",
+            "reason": "symbol_not_visible",
+            "symbol": symbol,
+        }
 
-    # Decide entry
-    side = side.upper()
-    if side == "LONG":
-        entry = float(tick.ask)
-        order_type = mt5.ORDER_TYPE_BUY
-    elif side == "SHORT":
-        entry = float(tick.bid)
-        order_type = mt5.ORDER_TYPE_SELL
-    else:
-        return {"status": "error", "error": f"invalid side: {side}"}
+    # 2) Determine entry price
+    price = float(entry_override) if entry_override else _price_for_side(symbol, side)
+    if price is None:
+        return {
+            "status": "error",
+            "reason": "no_tick",
+            "symbol": symbol,
+        }
 
-    if entry_override is not None:
-        entry = float(entry_override)
+    # 3) Compute SL/TP absolute prices
+    sl_price, tp_price = compute_sl_tp_prices(symbol, price, sl_pips, tp_pips, side)
 
-    # Compute SL/TP prices
-    st = compute_sl_tp_prices(symbol, side, entry, sl_pips, tp_pips)
-
+    # 4) Build and send request
+    order_type = _side_to_order_type(side)
     req = {
-        "action": mt5.TRADE_ACTION_DEAL,
+        "action": ACTION_DEAL,
         "symbol": symbol,
         "volume": float(lots),
         "type": order_type,
-        "price": entry,
-        "sl": st["sl"],
-        "tp": st["tp"],
-        "deviation": 10,
-        "magic": 0,
-        "comment": comment or "auto",
-        "type_filling": mt5.ORDER_FILLING_FOK,
+        "price": float(price),
+        "deviation": int(_env_float("MT5_DEVIATION", DEFAULT_DEVIATION)),
+        "comment": comment or "",
+        "type_filling": DEFAULT_FILLING,
     }
+    if sl_price:
+        req["sl"] = float(sl_price)
+    if tp_price:
+        req["tp"] = float(tp_price)
 
     res = mt5.order_send(req)
-    if res is None:
-        return {"status": "error", "error": "order_send_none", "debug": {"req": req, "st": st}}
 
-    ok = res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED)
-    return {
+    # 5) Normalize response
+    retcode = int(getattr(res, "retcode", 0)) if res else 0
+    ok = bool(res and retcode == RETCODE_DONE)
+
+    result: dict[str, Any] = {
         "status": "ok" if ok else "error",
-        "retcode": int(res.retcode),
-        "order": int(getattr(res, "order", 0) or 0),
-        "deal": int(getattr(res, "deal", 0) or 0),
-        "price": float(getattr(res, "price", entry) or entry),
-        "sl": float(st["sl"]),
-        "tp": float(st["tp"]),
-        "debug": {
-            "entry": entry,
-            "pip_size": st["pip_size"],
-            "tick_size": st["tick_size"],
-            "stop_level_points": st["stop_level_points"],
-            "point": st["point"],
-            "req": req,
+        "retcode": retcode,
+        "symbol": symbol,
+        "requested": {
+            "side": side,
+            "lots": float(lots),
+            "price": float(price),
+            "sl_pips": float(sl_pips or 0.0),
+            "tp_pips": float(tp_pips or 0.0),
+            "sl": sl_price,
+            "tp": tp_price,
+            "comment": comment or "",
+        },
+        "raw": {
+            "order": int(getattr(res, "order", 0)) if res else None,
+            "deal": int(getattr(res, "deal", 0)) if res else None,
+            "comment": getattr(res, "comment", "") if res else "",
         },
     }
+    return result

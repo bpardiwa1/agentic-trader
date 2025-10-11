@@ -49,7 +49,6 @@ def _tf_to_mt5(tf: str) -> int:
 
 # -----------------------------
 # Init / Symbol resolution
-# -----------------------------
 def _ensure_initialized() -> None:
     """Make sure MT5 is initialized/logged in."""
     try:
@@ -76,8 +75,8 @@ def _resolve_symbol(symbol: str) -> str:
       4) search via mt5_client (if available)
     """
 
-    def _extract_candidates(hits) -> list[str]:
-        cands: list[str] = []
+    def _extract_candidates(hits, base):
+        cands = []
         if isinstance(hits, list):
             for h in hits:
                 if isinstance(h, str):
@@ -105,7 +104,7 @@ def _resolve_symbol(symbol: str) -> str:
     if _HAS_MT5C and mt5c is not None and hasattr(mt5c, "search_symbols"):
         try:
             hits = mt5c.search_symbols(base)
-            cands = _extract_candidates(hits)
+            cands = _extract_candidates(hits, base)
             for cand in cands:
                 if cand.upper().startswith(base.upper()):
                     return cand
@@ -142,14 +141,13 @@ def get_rates(symbol: str, tf: str = "M15", n: int = 300) -> pd.DataFrame:
 
     timeframe = _tf_to_mt5(tf)
     rates = mt5.copy_rates_from_pos(resolved, timeframe, 0, n)
-
-    if rates is None or len(rates) == 0:
+    if not rates:
         end = dt.datetime.now()
         start = end - dt.timedelta(days=10)
         mt5.history_select(start, end)
         rates = mt5.copy_rates_from_pos(resolved, timeframe, 0, n)
 
-    if rates is None or len(rates) == 0:
+    if not rates:
         return pd.DataFrame()
 
     df = pd.DataFrame(rates)
@@ -170,14 +168,13 @@ def get_rates_payload(symbol: str, tf: str = "M15", n: int = 300) -> tuple[bool,
 
     timeframe = _tf_to_mt5(tf)
     rates = mt5.copy_rates_from_pos(resolved, timeframe, 0, n)
-
-    if rates is None or len(rates) == 0:
+    if not rates:
         end = dt.datetime.now()
         start = end - dt.timedelta(days=10)
         mt5.history_select(start, end)
         rates = mt5.copy_rates_from_pos(resolved, timeframe, 0, n)
 
-    if rates is None or len(rates) == 0:
+    if not rates:
         return False, {"error": "no data", "requested": symbol, "resolved": resolved, "tf": tf}
 
     df = pd.DataFrame(rates)
@@ -266,7 +263,7 @@ def compute_context(symbol: str, tf: str = "H1", count: int = 300) -> dict[str, 
     rlast = float(rsi14[-1])
     alast = float(atr14[-1])
 
-    # Bollinger width %
+    # Bollinger width % (20 period, 2σ)  # noqa: RUF003
     if len(closes) >= BB_PERIOD:
         roll = pd.Series(closes)
         m20 = roll.rolling(BB_PERIOD).mean().to_numpy()
